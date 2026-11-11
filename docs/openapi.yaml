@@ -1,0 +1,2005 @@
+openapi: 3.0.3
+info:
+  title: PaPedir API
+  version: 1.0.0
+  description: |
+    Contrato de la API de PaPedir, plataforma de reparto a domicilio en Celaya, Gto.
+
+    - Consumidores: App Cliente, App Tienda, App Repartidor (Flutter) y Web Admin/Soporte (React).
+    - Ningún cliente accede directo a la base de datos; todo pasa por esta API.
+    - Autenticación: JWT en el header `Authorization: Bearer <accessToken>`.
+    - JSON en camelCase, fechas ISO 8601 en UTC, montos en MXN con 2 decimales, IDs UUID.
+    - Los eventos en tiempo real (Socket.IO) se documentan en ACUERDOS.md.
+    - Las reglas de negocio completas están en el documento "PaPedir — Definición del proyecto".
+    - Pago: solo efectivo en esta versión (`metodoPago = efectivo`).
+
+    Este archivo es la fuente de verdad. Cualquier cambio se hace por Pull Request
+    en `papedir-backend` y se avisa al equipo (ver ACUERDOS.md).
+servers:
+  - url: http://localhost:3000/api/v1
+    description: Desarrollo local
+  - url: http://localhost:4010
+    description: Mock con Prism
+  - url: https://papedir-api.onrender.com/api/v1
+    description: Producción (Render)
+
+tags:
+  - name: Salud
+  - name: Auth
+    description: Registro, login y sesión. Usado por las 3 apps y la web.
+  - name: Usuarios
+  - name: Direcciones
+    description: App Cliente
+  - name: Tiendas
+    description: Consulta (App Cliente) y gestión de la propia tienda (App Tienda)
+  - name: Productos
+    description: App Tienda
+  - name: Pedidos
+    description: App Cliente y App Tienda
+  - name: Repartidor
+    description: App Repartidor
+  - name: Tickets
+    description: Incidencias y chat con soporte. Usado por las 3 apps y la web.
+  - name: Soporte
+    description: Web (rol soporte y admin)
+  - name: Admin
+    description: Web (rol admin)
+  - name: Archivos
+    description: Subida de imágenes (productos, tiendas, evidencia de entrega)
+
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      operationId: health
+      tags: [Salud]
+      summary: Estado del servicio
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+
+  # ─────────────────────────── AUTH ───────────────────────────
+  /auth/register:
+    post:
+      operationId: registrar
+      tags: [Auth]
+      summary: Registrar cliente, tienda o repartidor
+      description: |
+        Los roles `soporte` y `admin` no se registran aquí; los crea un admin desde la web.
+        Si `rol = tienda`, el campo `tienda` es obligatorio.
+        Tiendas y repartidores nacen con `estado = pendiente_aprobacion` hasta que soporte los aprueba.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterRequest' }
+      responses:
+        '201':
+          description: Usuario creado y sesión iniciada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409':
+          description: El email ya está registrado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /auth/login:
+    post:
+      operationId: login
+      tags: [Auth]
+      summary: Iniciar sesión
+      description: |
+        `app` indica desde dónde se inicia sesión. El backend rechaza con 403 si el rol
+        del usuario no corresponde a la app (ej. un repartidor en la App Cliente).
+        - cliente → rol cliente
+        - tienda → rol tienda
+        - repartidor → rol repartidor
+        - web → rol soporte o admin
+        Responde 403 si la cuenta está baneada. Una cuenta `pendiente_aprobacion` sí puede iniciar sesión;
+        la app debe mostrar un aviso de cuenta en revisión.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: Sesión iniciada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '401':
+          description: Credenciales inválidas
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /auth/refresh:
+    post:
+      operationId: refrescarToken
+      tags: [Auth]
+      summary: Renovar el access token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200':
+          description: Tokens nuevos
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tokens' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/logout:
+    post:
+      operationId: logout
+      tags: [Auth]
+      summary: Cerrar sesión (invalida el refresh token)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '204': { description: Sesión cerrada }
+
+  /auth/me:
+    get:
+      operationId: obtenerUsuarioActual
+      tags: [Auth]
+      summary: Usuario autenticado
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Usuario' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ─────────────────────────── USUARIOS ───────────────────────────
+  /usuarios/me:
+    patch:
+      operationId: actualizarMiPerfil
+      tags: [Usuarios]
+      summary: Actualizar mi perfil
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                nombre: { type: string, example: Ana López }
+                telefono: { type: string, example: '4611234567' }
+      responses:
+        '200':
+          description: Perfil actualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Usuario' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /usuarios/me/dispositivo:
+    put:
+      operationId: registrarDispositivo
+      tags: [Usuarios]
+      summary: Registrar el token de Firebase Cloud Messaging del dispositivo
+      description: Llamar después de cada login y cuando FCM renueve el token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fcmToken, app]
+              properties:
+                fcmToken: { type: string }
+                app: { $ref: '#/components/schemas/App' }
+      responses:
+        '204': { description: Registrado }
+
+  # ─────────────────────────── DIRECCIONES ───────────────────────────
+  /direcciones:
+    get:
+      operationId: listarDirecciones
+      tags: [Direcciones]
+      summary: Mis direcciones (rol cliente)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Direccion' }
+    post:
+      operationId: crearDireccion
+      tags: [Direcciones]
+      summary: Agregar dirección (rol cliente)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DireccionInput' }
+      responses:
+        '201':
+          description: Creada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Direccion' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /direcciones/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    patch:
+      operationId: actualizarDireccionesPorId
+      tags: [Direcciones]
+      summary: Editar dirección (rol cliente)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DireccionInput' }
+      responses:
+        '200':
+          description: Actualizada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Direccion' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: eliminarDireccionesPorId
+      tags: [Direcciones]
+      summary: Eliminar dirección (rol cliente)
+      responses:
+        '204': { description: Eliminada }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ─────────────────────────── TIENDAS ───────────────────────────
+  /tiendas:
+    get:
+      operationId: listarTiendas
+      tags: [Tiendas]
+      summary: Buscar tiendas abiertas (rol cliente)
+      description: Si se envían `lat` y `lng`, ordena por distancia y filtra por `radioKm`.
+      parameters:
+        - $ref: '#/components/parameters/Lat'
+        - $ref: '#/components/parameters/Lng'
+        - name: radioKm
+          in: query
+          schema: { type: number, default: 5 }
+        - name: q
+          in: query
+          description: Texto a buscar en nombre de la tienda
+          schema: { type: string }
+        - name: categoria
+          in: query
+          schema: { $ref: '#/components/schemas/CategoriaTienda' }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Tienda' }
+                  meta: { $ref: '#/components/schemas/PaginaMeta' }
+
+  /tiendas/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: obtenerTiendasPorId
+      tags: [Tiendas]
+      summary: Detalle de una tienda
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tienda' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /tiendas/{id}/menu:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: obtenerMenuTienda
+      tags: [Tiendas]
+      summary: Menú de una tienda agrupado por categorías (rol cliente)
+      description: Solo categorías con productos; los productos agotados vienen con `disponible = false`.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/MenuCategoria' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /tiendas/mia:
+    get:
+      operationId: obtenerMiTienda
+      tags: [Tiendas]
+      summary: Mi tienda (rol tienda)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tienda' }
+    patch:
+      operationId: actualizarMiTienda
+      tags: [Tiendas]
+      summary: Actualizar mi tienda, incluye abrir/cerrar (rol tienda)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TiendaUpdate' }
+      responses:
+        '200':
+          description: Actualizada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tienda' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /tiendas/mia/productos:
+    get:
+      operationId: listarMisProductos
+      tags: [Productos]
+      summary: Todos mis productos, incluidos los no disponibles (rol tienda)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Producto' }
+
+  /tiendas/mia/categorias:
+    get:
+      operationId: listarMisCategorias
+      tags: [Productos]
+      summary: Categorías de productos de mi tienda (rol tienda)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CategoriaProducto' }
+    post:
+      operationId: crearCategoria
+      tags: [Productos]
+      summary: Crear categoría de productos (rol tienda)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CategoriaProductoInput' }
+      responses:
+        '201':
+          description: Creada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CategoriaProducto' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /categorias/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    patch:
+      operationId: actualizarCategoria
+      tags: [Productos]
+      summary: Renombrar o reordenar categoría (rol tienda)
+      description: Acepta solo los campos que cambian.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CategoriaProductoInput' }
+      responses:
+        '200':
+          description: Actualizada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CategoriaProducto' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: eliminarCategoria
+      tags: [Productos]
+      summary: Eliminar categoría vacía (rol tienda)
+      responses:
+        '204': { description: Eliminada }
+        '409':
+          description: La categoría todavía tiene productos
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  # ─────────────────────────── PRODUCTOS ───────────────────────────
+  /productos:
+    post:
+      operationId: crearProducto
+      tags: [Productos]
+      summary: Crear producto en mi tienda (rol tienda)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductoInput' }
+      responses:
+        '201':
+          description: Creado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Producto' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /productos/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    patch:
+      operationId: actualizarProductosPorId
+      tags: [Productos]
+      summary: Editar producto (rol tienda, dueña del producto)
+      description: Acepta solo los campos que cambian; por ejemplo, enviar solo `disponible` en false para marcarlo agotado.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductoInput' }
+      responses:
+        '200':
+          description: Actualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Producto' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: eliminarProductosPorId
+      tags: [Productos]
+      summary: Eliminar producto (rol tienda, dueña del producto)
+      responses:
+        '204': { description: Eliminado }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ─────────────────────────── PEDIDOS ───────────────────────────
+  /pedidos:
+    get:
+      operationId: listarPedidos
+      tags: [Pedidos]
+      summary: Listar pedidos según el rol
+      description: |
+        - cliente: sus pedidos
+        - tienda: pedidos de su tienda
+        - repartidor: usar /repartidor/historial
+      parameters:
+        - name: estado
+          in: query
+          description: Uno o varios estados separados por coma
+          schema: { type: string, example: 'creado,aceptado_tienda' }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Pedido' }
+                  meta: { $ref: '#/components/schemas/PaginaMeta' }
+    post:
+      operationId: crearPedido
+      tags: [Pedidos]
+      summary: Crear pedido desde la App Cliente (rol cliente)
+      description: |
+        El backend recalcula precios, subtotal, costo de envío y total; el cliente no los envía.
+        Reglas: una sola tienda, mínimo $50 de productos, máximo $1,500 de total en efectivo, destino a 8 km o menos.
+        Genera `codigoEntrega` (4 dígitos), visible solo para el cliente. La tienda tiene 5 min para aceptar.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CrearPedidoRequest' }
+      responses:
+        '201':
+          description: Pedido creado en estado `creado`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409':
+          description: Tienda cerrada, producto agotado, fuera de cobertura, pedido menor al mínimo o mayor al máximo en efectivo
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /pedidos/cotizar:
+    post:
+      operationId: cotizarPedido
+      tags: [Pedidos]
+      summary: Cotizar un pedido antes de confirmarlo (rol cliente)
+      description: Calcula subtotal, costo de envío por distancia y total. No crea nada.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CotizarPedidoRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Cotizacion' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409':
+          description: Fuera de cobertura, tienda cerrada o producto agotado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /pedidos/cotizar-manual:
+    post:
+      operationId: cotizarPedidoManual
+      tags: [Pedidos]
+      summary: Cotizar el envío de un pedido manual (rol tienda)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ubicacion, montoACobrar]
+              properties:
+                ubicacion: { $ref: '#/components/schemas/Coordenadas' }
+                montoACobrar: { type: number, minimum: 0, example: 350.0 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Cotizacion' }
+        '409':
+          description: Destino fuera de cobertura (más de 8 km)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /pedidos/manual:
+    post:
+      operationId: crearPedidoManual
+      tags: [Pedidos]
+      summary: Crear pedido manual capturando los datos del cliente (rol tienda)
+      description: |
+        Para vendedores independientes o tiendas con ventas externas. No requiere cliente registrado.
+        Nace en estado `listo_para_recoger`. El destinatario paga en efectivo `montoACobrar` + costo de envío.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PedidoManualRequest' }
+      responses:
+        '201':
+          description: Pedido creado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /pedidos/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: obtenerPedidosPorId
+      tags: [Pedidos]
+      summary: Detalle de un pedido (cliente, tienda o repartidor involucrados; soporte)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /pedidos/{id}/eventos:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: listarEventosPedido
+      tags: [Pedidos]
+      summary: Bitácora de eventos del pedido (para la línea de tiempo)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/EventoPedido' }
+
+  /pedidos/{id}/aceptar:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: aceptarPedido
+      tags: [Pedidos]
+      summary: Tienda acepta el pedido (creado → aceptado_tienda)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+        '409': { $ref: '#/components/responses/TransicionInvalida' }
+
+  /pedidos/{id}/rechazar:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: rechazarPedido
+      tags: [Pedidos]
+      summary: Tienda rechaza el pedido (creado → rechazado)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MotivoRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+        '409': { $ref: '#/components/responses/TransicionInvalida' }
+
+  /pedidos/{id}/listo:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: marcarPedidoListo
+      tags: [Pedidos]
+      summary: Tienda marca el pedido listo (aceptado_tienda → listo_para_recoger)
+      description: A partir de aquí aparece en el mapa de los repartidores cercanos.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+        '409': { $ref: '#/components/responses/TransicionInvalida' }
+
+  /pedidos/{id}/cancelar:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: cancelarPedido
+      tags: [Pedidos]
+      summary: Cancelar pedido
+      description: |
+        - cliente: solo en estado `creado`
+        - tienda: antes de `asignado`
+        Después de eso solo soporte puede cancelar (/soporte/pedidos/{id}/cancelar).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MotivoRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+        '409': { $ref: '#/components/responses/TransicionInvalida' }
+
+  /pedidos/{id}/calificar:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: calificarPedido
+      tags: [Pedidos]
+      summary: Calificar tienda y repartidor (rol cliente, hasta 24 h después de entregado)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CalificacionInput' }
+      responses:
+        '201':
+          description: Registrada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Calificacion' }
+        '409':
+          description: El pedido no está entregado, ya fue calificado o pasaron más de 24 h
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  # ─────────────────────────── REPARTIDOR ───────────────────────────
+  /repartidor/disponibilidad:
+    patch:
+      operationId: actualizarRepartidorDisponibilidad
+      tags: [Repartidor]
+      summary: Conectarse / desconectarse para recibir pedidos
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [disponible]
+              properties:
+                disponible: { type: boolean }
+      description: No se puede desconectar con un viaje activo, ni conectar con la cuenta pendiente de aprobación.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  disponible: { type: boolean }
+        '409':
+          description: Viaje activo o cuenta pendiente de aprobación
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /repartidor/ubicacion:
+    put:
+      operationId: guardarRepartidorUbicacion
+      tags: [Repartidor]
+      summary: Reportar ubicación actual (respaldo HTTP)
+      description: |
+        Lo normal es emitir `repartidor:ubicacion` por Socket.IO cada 10 s.
+        Este endpoint es el respaldo si el socket está desconectado.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Coordenadas' }
+      responses:
+        '204': { description: Registrada }
+
+  /repartidor/pedidos-disponibles:
+    get:
+      operationId: listarRepartidorPedidosDisponibles
+      tags: [Repartidor]
+      summary: Pedidos `listo_para_recoger` cercanos para el mapa
+      description: |
+        Radio inicial 3 km (6 km para pedidos con más de 5 min sin repartidor).
+        Con un viaje activo solo devuelve pedidos encadenables: tienda a 1.5 km o menos de una parada
+        pendiente y destino a 3 km o menos de otro destino del viaje. Nada si ya lleva 4 pedidos.
+      parameters:
+        - $ref: '#/components/parameters/LatRequerida'
+        - $ref: '#/components/parameters/LngRequerida'
+        - name: radioKm
+          in: query
+          schema: { type: number, default: 3 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/PedidoDisponible' }
+
+  /repartidor/pedidos/{id}/tomar:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: tomarPedido
+      tags: [Repartidor]
+      summary: Tomar un pedido (listo_para_recoger → asignado)
+      description: |
+        Operación atómica. Si otro repartidor lo tomó primero responde 409 y la app debe
+        quitarlo del mapa. El pedido se agrega al viaje activo o crea uno nuevo.
+        Máximo 4 pedidos por viaje; un pedido no encadenable también responde 409.
+        El repartidor debe estar conectado (409 `REPARTIDOR_DESCONECTADO`).
+      responses:
+        '200':
+          description: Pedido asignado; devuelve el viaje actualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Viaje' }
+        '409':
+          description: El pedido ya fue tomado, el viaje ya tiene 4 pedidos o el pedido no es encadenable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /repartidor/viaje-actual:
+    get:
+      operationId: obtenerRepartidorViajeActual
+      tags: [Repartidor]
+      summary: Viaje activo con sus pedidos en orden de visita
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Viaje' }
+        '204': { description: Sin viaje activo }
+
+  /repartidor/pedidos/{id}/llegada-tienda:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: marcarLlegadaTienda
+      tags: [Repartidor]
+      summary: Marcar llegada a la tienda (asignado → en_tienda)
+      description: Solo se acepta a 150 m o menos del punto (geocerca); si no, 409 `FUERA_DE_RANGO`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MarcaRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+        '409': { $ref: '#/components/responses/TransicionInvalida' }
+
+  /repartidor/pedidos/{id}/salida-tienda:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: marcarSalidaTienda
+      tags: [Repartidor]
+      summary: Marcar salida de la tienda con el pedido (en_tienda → en_camino)
+      description: Al salir, el repartidor ya pagó a la tienda el `montoAPagarTienda` del pedido.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MarcaRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+        '409': { $ref: '#/components/responses/TransicionInvalida' }
+
+  /repartidor/pedidos/{id}/llegada-cliente:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: marcarLlegadaCliente
+      tags: [Repartidor]
+      summary: Marcar llegada al domicilio (en_camino → en_domicilio)
+      description: Solo se acepta a 150 m o menos del punto (geocerca); si no, 409 `FUERA_DE_RANGO`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MarcaRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+        '409': { $ref: '#/components/responses/TransicionInvalida' }
+
+  /repartidor/pedidos/{id}/entregado:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: marcarEntregado
+      tags: [Repartidor]
+      summary: Marcar entrega de productos (en_domicilio → entregado)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EntregaRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+        '409': { $ref: '#/components/responses/TransicionInvalida' }
+
+  /repartidor/historial:
+    get:
+      operationId: listarRepartidorHistorial
+      tags: [Repartidor]
+      summary: Pedidos entregados por mí
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Pedido' }
+                  meta: { $ref: '#/components/schemas/PaginaMeta' }
+
+  # ─────────────────────────── ARCHIVOS ───────────────────────────
+  /uploads:
+    post:
+      operationId: subirImagen
+      tags: [Archivos]
+      summary: Subir una imagen y obtener su URL
+      description: |
+        JPG, PNG o WebP de hasta 5 MB. El backend la guarda en Supabase Storage y devuelve la URL
+        pública para usarla en `imagenUrl` o `evidenciaUrl`. Las apps nunca hablan con Supabase.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [archivo, tipo]
+              properties:
+                archivo: { type: string, format: binary }
+                tipo:
+                  type: string
+                  enum: [producto, tienda, evidencia]
+      responses:
+        '201':
+          description: Subida
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url: { type: string, example: 'https://xyz.supabase.co/storage/v1/object/public/productos/abc.webp' }
+        '400':
+          description: Formato no permitido o archivo mayor a 5 MB
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  # ─────────────────────────── TICKETS (las 3 apps + web) ───────────────────────────
+  /tickets:
+    get:
+      operationId: listarTickets
+      tags: [Tickets]
+      summary: Mis tickets (cliente/tienda/repartidor); soporte ve todos
+      parameters:
+        - name: estado
+          in: query
+          schema: { $ref: '#/components/schemas/EstadoTicket' }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Ticket' }
+                  meta: { $ref: '#/components/schemas/PaginaMeta' }
+    post:
+      operationId: crearTicket
+      tags: [Tickets]
+      summary: Abrir ticket con soporte (cliente, tienda o repartidor)
+      description: Solo un ticket abierto por pedido y usuario.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TicketInput' }
+      responses:
+        '201':
+          description: Creado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ticket' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409':
+          description: Ya existe un ticket abierto para ese pedido
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /tickets/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: obtenerTicketsPorId
+      tags: [Tickets]
+      summary: Detalle de ticket
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ticket' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /tickets/{id}/mensajes:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: listarMensajesTicket
+      tags: [Tickets]
+      summary: Historial del chat del ticket
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Mensaje' }
+    post:
+      operationId: enviarMensajeTicket
+      tags: [Tickets]
+      summary: Enviar mensaje en el ticket
+      description: El mensaje también se emite en tiempo real como `ticket:mensaje`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [texto]
+              properties:
+                texto: { type: string, maxLength: 1000, example: Mi pedido no ha llegado }
+      responses:
+        '201':
+          description: Enviado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Mensaje' }
+        '409':
+          description: El ticket está cerrado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  # ─────────────────────────── SOPORTE (web) ───────────────────────────
+  /soporte/pedidos:
+    get:
+      operationId: listarSoportePedidos
+      tags: [Soporte]
+      summary: Buscar cualquier pedido (rol soporte/admin)
+      parameters:
+        - name: estado
+          in: query
+          schema: { type: string }
+        - name: q
+          in: query
+          description: Folio, nombre o teléfono
+          schema: { type: string }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Pedido' }
+                  meta: { $ref: '#/components/schemas/PaginaMeta' }
+
+  /soporte/pedidos/{id}/cancelar:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: soporteCancelarPedido
+      tags: [Soporte]
+      summary: Cancelar pedido en cualquier estado no final
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MotivoRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+
+  /soporte/pedidos/{id}/completar:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: soporteCompletarPedido
+      tags: [Soporte]
+      summary: Marcar como entregado (ej. ubicación mal capturada pero sí se entregó)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MotivoRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+
+  /soporte/pedidos/{id}/ubicacion:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    patch:
+      operationId: soporteCorregirUbicacion
+      tags: [Soporte]
+      summary: Corregir la ubicación de destino
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [direccion, ubicacion, motivo]
+              properties:
+                direccion: { type: string }
+                ubicacion: { $ref: '#/components/schemas/Coordenadas' }
+                motivo: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+
+  /soporte/pedidos/{id}/liberar:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: soporteLiberarPedido
+      tags: [Soporte]
+      summary: Quitar el pedido al repartidor y regresarlo a listo_para_recoger
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MotivoRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+        '409': { $ref: '#/components/responses/TransicionInvalida' }
+
+  /soporte/tickets/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    patch:
+      operationId: soporteActualizarTicket
+      tags: [Soporte]
+      summary: Tomar, cambiar estado o cerrar un ticket
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                estado: { $ref: '#/components/schemas/EstadoTicket' }
+                asignarmelo: { type: boolean }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ticket' }
+
+  /soporte/usuarios:
+    get:
+      operationId: listarSoporteUsuarios
+      tags: [Soporte]
+      summary: Buscar usuarios, tiendas y repartidores
+      parameters:
+        - name: rol
+          in: query
+          schema: { $ref: '#/components/schemas/Rol' }
+        - name: estado
+          in: query
+          schema: { $ref: '#/components/schemas/EstadoCuenta' }
+        - name: q
+          in: query
+          schema: { type: string }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Usuario' }
+                  meta: { $ref: '#/components/schemas/PaginaMeta' }
+
+  /soporte/usuarios/{id}/aprobar:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: aprobarUsuario
+      tags: [Soporte]
+      summary: Aprobar una tienda o repartidor pendiente
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Usuario' }
+        '409':
+          description: La cuenta no está pendiente de aprobación
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /soporte/usuarios/{id}/banear:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: banearUsuario
+      tags: [Soporte]
+      summary: Banear cuenta fraudulenta (invalida sus sesiones)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MotivoRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Usuario' }
+
+  /soporte/usuarios/{id}/desbanear:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: desbanearUsuario
+      tags: [Soporte]
+      summary: Quitar baneo
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Usuario' }
+
+  # ─────────────────────────── ADMIN (web) ───────────────────────────
+  /admin/usuarios:
+    post:
+      operationId: crearUsuarioInterno
+      tags: [Admin]
+      summary: Crear cuentas de soporte o admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nombre, email, password, rol]
+              properties:
+                nombre: { type: string }
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8 }
+                rol:
+                  type: string
+                  enum: [soporte, admin]
+      responses:
+        '201':
+          description: Creado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Usuario' }
+
+  /admin/metricas:
+    get:
+      operationId: obtenerAdminMetricas
+      tags: [Admin]
+      summary: Métricas generales para el dashboard
+      parameters:
+        - name: desde
+          in: query
+          schema: { type: string, format: date }
+        - name: hasta
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pedidosTotales: { type: integer, example: 320 }
+                  pedidosEntregados: { type: integer, example: 298 }
+                  pedidosCancelados: { type: integer, example: 22 }
+                  ventasTotales: { type: number, example: 48250.5 }
+                  tiendasActivas: { type: integer, example: 14 }
+                  repartidoresActivos: { type: integer, example: 9 }
+                  ticketsAbiertos: { type: integer, example: 3 }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    Lat:
+      name: lat
+      in: query
+      schema: { type: number, example: 20.5222 }
+    Lng:
+      name: lng
+      in: query
+      schema: { type: number, example: -100.8123 }
+    LatRequerida:
+      name: lat
+      in: query
+      required: true
+      schema: { type: number, example: 20.5222 }
+    LngRequerida:
+      name: lng
+      in: query
+      required: true
+      schema: { type: number, example: -100.8123 }
+
+  responses:
+    Unauthorized:
+      description: Token ausente, inválido o expirado. La app debe intentar /auth/refresh una vez.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: El rol no tiene permiso, la app no corresponde al rol o la cuenta está baneada
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Recurso no encontrado
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ValidationError:
+      description: Datos inválidos
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    TransicionInvalida:
+      description: El pedido no está en un estado que permita esta acción (`TRANSICION_INVALIDA`) o el repartidor está fuera de la geocerca (`FUERA_DE_RANGO`)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    # ── Comunes ──
+    Error:
+      type: object
+      required: [statusCode, error, message]
+      properties:
+        statusCode: { type: integer, example: 409 }
+        error:
+          type: string
+          description: |
+            Código estable para que las apps decidan qué mostrar:
+            VALIDACION, NO_AUTENTICADO, SIN_PERMISO, APP_INCORRECTA, CUENTA_BANEADA, CUENTA_PENDIENTE,
+            NO_ENCONTRADO, EMAIL_REGISTRADO, TRANSICION_INVALIDA, FUERA_DE_RANGO, FUERA_DE_COBERTURA,
+            TIENDA_CERRADA, PRODUCTO_AGOTADO, PEDIDO_MINIMO, PEDIDO_MAXIMO_EFECTIVO, PEDIDO_YA_TOMADO,
+            VIAJE_LLENO, NO_ENCADENABLE, VIAJE_ACTIVO, CODIGO_INCORRECTO, TICKET_DUPLICADO, CALIFICACION_INVALIDA,
+            REPARTIDOR_DESCONECTADO, CATEGORIA_CON_PRODUCTOS, TICKET_CERRADO, DEMASIADAS_PETICIONES, ERROR_INTERNO
+          example: PEDIDO_YA_TOMADO
+        message: { type: string, example: El pedido ya fue tomado por otro repartidor }
+        detalles:
+          type: array
+          description: Errores por campo (solo en validación)
+          items:
+            type: object
+            properties:
+              campo: { type: string, example: email }
+              mensaje: { type: string, example: email debe ser un correo válido }
+
+    PaginaMeta:
+      type: object
+      properties:
+        page: { type: integer, example: 1 }
+        limit: { type: integer, example: 20 }
+        total: { type: integer, example: 57 }
+
+    Coordenadas:
+      type: object
+      required: [lat, lng]
+      properties:
+        lat: { type: number, minimum: -90, maximum: 90, example: 20.5222 }
+        lng: { type: number, minimum: -180, maximum: 180, example: -100.8123 }
+
+    MotivoRequest:
+      type: object
+      required: [motivo]
+      properties:
+        motivo: { type: string, maxLength: 500, example: El cliente no respondió }
+
+    MarcaRequest:
+      type: object
+      required: [ubicacion]
+      properties:
+        ubicacion: { $ref: '#/components/schemas/Coordenadas' }
+
+    EntregaRequest:
+      type: object
+      required: [ubicacion]
+      properties:
+        ubicacion: { $ref: '#/components/schemas/Coordenadas' }
+        codigoEntrega:
+          type: string
+          pattern: '^[0-9]{4}$'
+          description: Obligatorio en pedidos de la app; 409 CODIGO_INCORRECTO si no coincide. No aplica en manuales.
+          example: '4821'
+        evidenciaUrl:
+          type: string
+          nullable: true
+          description: Foto opcional subida con /uploads (tipo evidencia)
+
+    CalificacionInput:
+      type: object
+      required: [tienda, repartidor]
+      properties:
+        tienda: { type: integer, minimum: 1, maximum: 5, example: 5 }
+        repartidor: { type: integer, minimum: 1, maximum: 5, example: 4 }
+        comentario: { type: string, maxLength: 300, nullable: true }
+
+    Calificacion:
+      allOf:
+        - $ref: '#/components/schemas/CalificacionInput'
+        - type: object
+          properties:
+            creadoEn: { type: string, format: date-time }
+
+    EstadoCuenta:
+      type: string
+      description: Tiendas y repartidores nacen en pendiente_aprobacion; clientes en activo.
+      enum: [pendiente_aprobacion, activo, baneado]
+
+    MetodoPago:
+      type: string
+      description: Solo efectivo en esta versión; tarjeta se agregará después.
+      enum: [efectivo]
+
+    App:
+      type: string
+      enum: [cliente, tienda, repartidor, web]
+
+    Rol:
+      type: string
+      enum: [cliente, tienda, repartidor, soporte, admin]
+
+    # ── Auth / usuarios ──
+    Usuario:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        nombre: { type: string, example: Ana López }
+        email: { type: string, format: email, example: ana@correo.com }
+        telefono: { type: string, nullable: true, example: '4611234567' }
+        rol: { $ref: '#/components/schemas/Rol' }
+        estado: { $ref: '#/components/schemas/EstadoCuenta' }
+        creadoEn: { type: string, format: date-time }
+
+    Tokens:
+      type: object
+      properties:
+        accessToken: { type: string, description: Expira en 15 min }
+        refreshToken: { type: string, description: Expira en 7 días }
+
+    AuthResponse:
+      allOf:
+        - $ref: '#/components/schemas/Tokens'
+        - type: object
+          properties:
+            usuario: { $ref: '#/components/schemas/Usuario' }
+
+    RegisterRequest:
+      type: object
+      required: [nombre, email, password, telefono, rol]
+      properties:
+        nombre: { type: string, example: Ana López }
+        email: { type: string, format: email, example: ana@correo.com }
+        password: { type: string, minLength: 8, example: PaPedir123! }
+        telefono: { type: string, example: '4611234567' }
+        rol:
+          type: string
+          enum: [cliente, tienda, repartidor]
+        tienda:
+          type: object
+          description: Obligatorio si rol = tienda
+          required: [nombre, categoria, direccion, ubicacion]
+          properties:
+            nombre: { type: string, example: Tacos Don Pepe }
+            categoria: { $ref: '#/components/schemas/CategoriaTienda' }
+            direccion: { type: string }
+            ubicacion: { $ref: '#/components/schemas/Coordenadas' }
+
+    LoginRequest:
+      type: object
+      required: [email, password, app]
+      properties:
+        email: { type: string, format: email, example: cliente@papedir.test }
+        password: { type: string, example: PaPedir123! }
+        app: { $ref: '#/components/schemas/App' }
+
+    # ── Direcciones ──
+    DireccionInput:
+      type: object
+      required: [alias, texto, ubicacion]
+      properties:
+        alias: { type: string, example: Casa }
+        texto: { type: string, example: 'Av. Tecnológico 1500, Celaya, Gto.' }
+        referencias: { type: string, nullable: true, example: Portón negro }
+        ubicacion: { $ref: '#/components/schemas/Coordenadas' }
+
+    Direccion:
+      allOf:
+        - type: object
+          properties:
+            id: { type: string, format: uuid }
+        - $ref: '#/components/schemas/DireccionInput'
+
+    # ── Tiendas / productos ──
+    CategoriaTienda:
+      type: string
+      enum: [comida, abarrotes, farmacia, materiales, otros]
+
+    Tienda:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        nombre: { type: string, example: Tacos Don Pepe }
+        categoria: { $ref: '#/components/schemas/CategoriaTienda' }
+        descripcion: { type: string, nullable: true }
+        imagenUrl: { type: string, nullable: true }
+        telefono: { type: string, example: '4615550000' }
+        direccion: { type: string, example: 'Calle Hidalgo 120, Celaya' }
+        ubicacion: { $ref: '#/components/schemas/Coordenadas' }
+        abierta: { type: boolean, example: true }
+        tiempoPreparacionMin: { type: integer, example: 20 }
+        calificacion: { type: number, nullable: true, minimum: 1, maximum: 5, example: 4.7 }
+        distanciaKm:
+          type: number
+          nullable: true
+          description: Solo si se buscó con lat/lng
+          example: 1.4
+
+    TiendaUpdate:
+      type: object
+      properties:
+        nombre: { type: string }
+        categoria: { $ref: '#/components/schemas/CategoriaTienda' }
+        descripcion: { type: string }
+        imagenUrl: { type: string }
+        telefono: { type: string }
+        direccion: { type: string }
+        ubicacion: { $ref: '#/components/schemas/Coordenadas' }
+        abierta:
+          type: boolean
+          description: Una tienda pendiente de aprobación no puede abrir (409 CUENTA_PENDIENTE)
+        tiempoPreparacionMin: { type: integer, minimum: 5, maximum: 120 }
+
+    CategoriaProductoInput:
+      type: object
+      required: [nombre]
+      properties:
+        nombre: { type: string, maxLength: 40, example: Tacos }
+        orden: { type: integer, minimum: 0, example: 1 }
+
+    CategoriaProducto:
+      allOf:
+        - type: object
+          properties:
+            id: { type: string, format: uuid }
+        - $ref: '#/components/schemas/CategoriaProductoInput'
+
+    MenuCategoria:
+      type: object
+      properties:
+        categoria: { $ref: '#/components/schemas/CategoriaProducto' }
+        productos:
+          type: array
+          items: { $ref: '#/components/schemas/Producto' }
+
+    ProductoInput:
+      type: object
+      required: [categoriaId, nombre, precio]
+      properties:
+        categoriaId: { type: string, format: uuid }
+        nombre: { type: string, example: Orden de pastor }
+        descripcion: { type: string, nullable: true, example: 5 tacos con piña }
+        precio: { type: number, minimum: 0, example: 85.0 }
+        imagenUrl: { type: string, nullable: true }
+        disponible:
+          type: boolean
+          default: true
+          description: false = agotado (se muestra pero no se puede pedir)
+
+    Producto:
+      allOf:
+        - type: object
+          properties:
+            id: { type: string, format: uuid }
+            tiendaId: { type: string, format: uuid }
+        - $ref: '#/components/schemas/ProductoInput'
+
+    # ── Pedidos ──
+    EstadoPedido:
+      type: string
+      description: |
+        creado → aceptado_tienda → listo_para_recoger → asignado → en_tienda
+        → en_camino → en_domicilio → entregado.
+        Finales: entregado, cancelado, rechazado.
+      enum:
+        - creado
+        - aceptado_tienda
+        - listo_para_recoger
+        - asignado
+        - en_tienda
+        - en_camino
+        - en_domicilio
+        - entregado
+        - cancelado
+        - rechazado
+
+    CotizarPedidoRequest:
+      type: object
+      required: [tiendaId, direccionId, items]
+      properties:
+        tiendaId: { type: string, format: uuid }
+        direccionId: { type: string, format: uuid }
+        items:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [productoId, cantidad]
+            properties:
+              productoId: { type: string, format: uuid }
+              cantidad: { type: integer, minimum: 1, example: 2 }
+
+    Cotizacion:
+      type: object
+      description: |
+        Envío = $25 hasta 2 km + $7 por km adicional o fracción.
+        Distancia = línea recta tienda → destino × 1.3. Cobertura máxima 8 km.
+      properties:
+        distanciaKm: { type: number, example: 4.42 }
+        subtotal: { type: number, example: 170.0 }
+        costoEnvio: { type: number, example: 46.0 }
+        total: { type: number, example: 216.0 }
+        metodoPago: { $ref: '#/components/schemas/MetodoPago' }
+        tiempoEstimadoMin:
+          type: integer
+          description: Preparación de la tienda + traslado estimado
+          example: 35
+
+    CrearPedidoRequest:
+      type: object
+      required: [tiendaId, direccionId, items]
+      properties:
+        tiendaId: { type: string, format: uuid }
+        direccionId: { type: string, format: uuid }
+        metodoPago: { $ref: '#/components/schemas/MetodoPago' }
+        notas: { type: string, nullable: true, example: Sin cebolla }
+        items:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [productoId, cantidad]
+            properties:
+              productoId: { type: string, format: uuid }
+              cantidad: { type: integer, minimum: 1, example: 2 }
+
+    PedidoManualRequest:
+      type: object
+      required: [destino, descripcion, montoACobrar]
+      properties:
+        destino: { $ref: '#/components/schemas/Destino' }
+        descripcion: { type: string, example: 1 paquete de ropa }
+        montoACobrar:
+          type: number
+          minimum: 0
+          description: Monto de la mercancía a cobrar al destinatario (0 si ya está pagado). El envío se suma aparte.
+          example: 350.0
+        notas: { type: string, nullable: true }
+
+    Destino:
+      type: object
+      required: [nombre, telefono, direccion, ubicacion]
+      properties:
+        nombre: { type: string, example: Luis Hernández }
+        telefono: { type: string, example: '4619876543' }
+        direccion: { type: string, example: 'Av. Irrigación 300, Celaya' }
+        referencias: { type: string, nullable: true }
+        ubicacion: { $ref: '#/components/schemas/Coordenadas' }
+
+    TiendaResumen:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        nombre: { type: string, example: Tacos Don Pepe }
+        telefono: { type: string, example: '4615550000' }
+        direccion: { type: string }
+        ubicacion: { $ref: '#/components/schemas/Coordenadas' }
+
+    RepartidorResumen:
+      type: object
+      nullable: true
+      properties:
+        id: { type: string, format: uuid }
+        nombre: { type: string, example: Carlos Ruiz }
+        telefono: { type: string, example: '4611112233' }
+        ubicacion:
+          type: object
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/Coordenadas'
+
+    PedidoItem:
+      type: object
+      properties:
+        productoId: { type: string, format: uuid }
+        nombre: { type: string, example: Orden de pastor }
+        cantidad: { type: integer, example: 2 }
+        precioUnitario: { type: number, example: 85.0 }
+        importe: { type: number, example: 170.0 }
+
+    Pedido:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        folio: { type: string, example: R-000123 }
+        estado: { $ref: '#/components/schemas/EstadoPedido' }
+        origen:
+          type: string
+          enum: [app, manual]
+        tienda: { $ref: '#/components/schemas/TiendaResumen' }
+        clienteId: { type: string, format: uuid, nullable: true }
+        destino: { $ref: '#/components/schemas/Destino' }
+        descripcion:
+          type: string
+          nullable: true
+          description: Solo pedidos manuales
+        items:
+          type: array
+          description: Vacío en pedidos manuales
+          items: { $ref: '#/components/schemas/PedidoItem' }
+        subtotal:
+          type: number
+          description: Productos (o montoACobrar en pedidos manuales)
+          example: 170.0
+        costoEnvio: { type: number, example: 46.0 }
+        total: { type: number, example: 216.0 }
+        distanciaKm: { type: number, example: 4.42 }
+        metodoPago: { $ref: '#/components/schemas/MetodoPago' }
+        montoAPagarTienda:
+          type: number
+          description: Efectivo que el repartidor entrega a la tienda al recoger (= subtotal)
+          example: 170.0
+        codigoEntrega:
+          type: string
+          nullable: true
+          description: 4 dígitos. Solo viene en la respuesta para el cliente dueño del pedido; null en manuales
+          example: '4821'
+        calificacion:
+          allOf:
+            - $ref: '#/components/schemas/Calificacion'
+          nullable: true
+          type: object
+        notas: { type: string, nullable: true }
+        repartidor: { $ref: '#/components/schemas/RepartidorResumen' }
+        viajeId: { type: string, format: uuid, nullable: true }
+        creadoEn: { type: string, format: date-time }
+        actualizadoEn: { type: string, format: date-time }
+
+    EventoPedido:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        tipo:
+          type: string
+          enum:
+            - creado
+            - aceptado_tienda
+            - rechazado
+            - listo_para_recoger
+            - asignado
+            - llegada_tienda
+            - salida_tienda
+            - llegada_cliente
+            - entregado
+            - cancelado
+            - ubicacion_corregida
+            - completado_por_soporte
+            - liberado_por_soporte
+            - cancelado_automatico
+            - calificado
+        usuarioId: { type: string, format: uuid }
+        rol: { $ref: '#/components/schemas/Rol' }
+        detalle: { type: string, nullable: true }
+        ubicacion:
+          type: object
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/Coordenadas'
+        creadoEn: { type: string, format: date-time }
+
+    PedidoDisponible:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        folio: { type: string, example: R-000124 }
+        tienda: { $ref: '#/components/schemas/TiendaResumen' }
+        destinoUbicacion: { $ref: '#/components/schemas/Coordenadas' }
+        destinoDireccion: { type: string }
+        distanciaATiendaKm: { type: number, example: 0.8 }
+        distanciaEntregaKm: { type: number, example: 2.3 }
+        costoEnvio:
+          type: number
+          description: Ganancia del repartidor por este pedido
+          example: 46.0
+        montoAPagarTienda: { type: number, example: 170.0 }
+        totalACobrar:
+          type: number
+          description: Efectivo a cobrar en el domicilio
+          example: 216.0
+
+    Viaje:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        estado:
+          type: string
+          enum: [activo, finalizado]
+        maxPedidos: { type: integer, example: 4 }
+        efectivoAPagarTiendas: { type: number, example: 340.0 }
+        efectivoACobrar: { type: number, example: 432.0 }
+        gananciaEnvio: { type: number, example: 92.0 }
+        paradas:
+          type: array
+          description: Orden sugerido de visita (tiendas y domicilios)
+          items:
+            type: object
+            properties:
+              pedidoId: { type: string, format: uuid }
+              tipo:
+                type: string
+                enum: [tienda, domicilio]
+              nombre: { type: string, example: Tacos Don Pepe }
+              direccion: { type: string }
+              ubicacion: { $ref: '#/components/schemas/Coordenadas' }
+              completada: { type: boolean }
+        pedidos:
+          type: array
+          items: { $ref: '#/components/schemas/Pedido' }
+
+    # ── Tickets ──
+    EstadoTicket:
+      type: string
+      enum: [abierto, en_atencion, resuelto, cerrado]
+
+    TicketInput:
+      type: object
+      required: [asunto, descripcion]
+      properties:
+        pedidoId: { type: string, format: uuid, nullable: true }
+        asunto: { type: string, maxLength: 120, example: No recibí mi pedido }
+        descripcion: { type: string, maxLength: 1000 }
+
+    Ticket:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        folio: { type: string, example: T-000045 }
+        asunto: { type: string }
+        descripcion: { type: string }
+        estado: { $ref: '#/components/schemas/EstadoTicket' }
+        pedidoId: { type: string, format: uuid, nullable: true }
+        creadoPor:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            nombre: { type: string }
+            rol: { $ref: '#/components/schemas/Rol' }
+        atendidoPor:
+          type: object
+          nullable: true
+          properties:
+            id: { type: string, format: uuid }
+            nombre: { type: string }
+        creadoEn: { type: string, format: date-time }
+        actualizadoEn: { type: string, format: date-time }
+
+    Mensaje:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        ticketId: { type: string, format: uuid }
+        autorId: { type: string, format: uuid }
+        autorRol: { $ref: '#/components/schemas/Rol' }
+        texto: { type: string }
+        creadoEn: { type: string, format: date-time }
