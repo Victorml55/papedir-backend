@@ -5,7 +5,7 @@
   "private": true,
   "license": "UNLICENSED",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "build": "nest build",
@@ -17,6 +17,7 @@
     "migration:run": "npm run typeorm -- migration:run",
     "migration:revert": "npm run typeorm -- migration:revert",
     "seed": "ts-node src/database/seed.ts",
+    "verificar": "ts-node src/scripts/verificar.ts",
     "test:e2e": "jest --config test/jest-e2e.json --runInBand"
   },
   "dependencies": {

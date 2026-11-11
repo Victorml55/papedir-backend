@@ -1,4 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { cert, getApps, initializeApp } from 'firebase-admin/app';
+import { getMessaging, Messaging } from 'firebase-admin/messaging';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { Dispositivo, Usuario } from '../database/entities';
@@ -12,7 +14,7 @@ import { Rol } from '../config/reglas';
 @Injectable()
 export class PushService {
   private readonly log = new Logger('Push');
-  private mensajeria: any = null;
+  private mensajeria: Messaging | null = null;
 
   constructor(
     @InjectRepository(Dispositivo) private readonly dispositivos: Repository<Dispositivo>,
@@ -21,11 +23,10 @@ export class PushService {
     const b64 = process.env.FIREBASE_SERVICE_ACCOUNT_BASE64;
     if (!b64) return;
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const admin = require('firebase-admin');
       const cuenta = JSON.parse(Buffer.from(b64, 'base64').toString('utf8'));
-      const app = admin.apps.length ? admin.app() : admin.initializeApp({ credential: admin.credential.cert(cuenta) });
-      this.mensajeria = admin.messaging(app);
+      const app = getApps().find((a) => a.name === 'papedir') ?? initializeApp({ credential: cert(cuenta) }, 'papedir');
+      this.mensajeria = getMessaging(app);
+      this.log.log(`Firebase listo (proyecto ${cuenta.project_id})`);
     } catch (e) {
       this.log.error(`No se pudo iniciar Firebase: ${e.message}`);
     }

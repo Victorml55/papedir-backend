@@ -1,0 +1,38 @@
+# Blueprint de Render: New → Blueprint → elige este repositorio.
+# Render crea el servicio con esta configuración y te pide los valores marcados con sync: false.
+services:
+  - type: web
+    name: papedir-api
+    runtime: node
+    plan: free
+    region: ohio # ponlo en la misma región (o la más cercana) que tu proyecto de Supabase
+    branch: main
+    autoDeploy: true
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm run start:prod
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true # Render genera una cadena aleatoria
+      - key: JWT_EXPIRES_IN
+        value: 15m
+      - key: REFRESH_DIAS
+        value: "7"
+      - key: DATABASE_SSL
+        value: "true"
+      - key: DATABASE_POOL_MAX
+        value: "10"
+      - key: SUPABASE_BUCKET
+        value: papedir
+      - key: DATABASE_URL
+        sync: false # Transaction pooler de Supabase (puerto 6543)
+      - key: SUPABASE_URL
+        sync: false # https://<ref>.supabase.co
+      - key: SUPABASE_SERVICE_KEY
+        sync: false # llave secreta (sb_secret_...)
+      - key: FRONTEND_URL
+        sync: false # dominio de Vercel, sin "/" al final
+      - key: FIREBASE_SERVICE_ACCOUNT_BASE64
+        sync: false # opcional: sin ella no hay push
