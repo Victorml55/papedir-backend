@@ -10,7 +10,10 @@ export class Inicial1731300000000 implements MigrationInterface {
   name = 'Inicial1731300000000';
 
   public async up(q: QueryRunner): Promise<void> {
-    await q.query(`CREATE EXTENSION IF NOT EXISTS postgis`);
+    // En Supabase, PostGIS va en el esquema "extensions" (el rol postgres ya lo tiene en su search_path).
+    // En PostgreSQL local o en CI ese esquema no existe y se instala en public.
+    const [{ existe }] = await q.query(`SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'extensions') AS existe`);
+    await q.query(`CREATE EXTENSION IF NOT EXISTS postgis${existe ? ' WITH SCHEMA extensions' : ''}`);
 
     await q.query(`
       CREATE TABLE usuarios (

@@ -6,14 +6,14 @@ Las 3 apps (Cliente, Tienda, Repartidor) y la web de Admin/Soporte hablan única
 
 | | |
 |---|---|
-| Stack | Node.js 20+ · NestJS 11 · TypeORM · PostgreSQL + PostGIS · Socket.IO · Firebase Cloud Messaging |
+| Stack | Node.js 22 · NestJS 11 · TypeORM · PostgreSQL + PostGIS · Socket.IO · Firebase Cloud Messaging |
 | Contrato | [`docs/openapi.yaml`](docs/openapi.yaml) — 65 endpoints. Es la fuente de verdad |
 | Acuerdos del equipo | [`ACUERDOS.md`](ACUERDOS.md) — convenciones, eventos de tiempo real, Git |
 | Reglas de negocio | [`src/config/reglas.ts`](src/config/reglas.ts) — montos, distancias y tiempos en un solo lugar |
 
 ## Correr en local
 
-Necesitas Node 20+ y PostgreSQL con PostGIS (o una base de Supabase).
+Necesitas Node 22 y PostgreSQL con PostGIS (o una base de Supabase).
 
 ```bash
 npm install
@@ -55,6 +55,7 @@ El seed también crea 4 tiendas abiertas con menú y 6 pedidos listos para recog
 | `npm run start:dev` | API con recarga automática |
 | `npm run build` · `npm run start:prod` | Compilar y correr en producción |
 | `npm run seed` | Datos de prueba |
+| `npm run verificar` | Revisa que `.env` funcione: base, PostGIS, Storage, Firebase |
 | `npm run test:e2e` | 40 pruebas de punta a punta contra `papedir_test` (**borra esa base**) |
 | `npm run migration:run` · `migration:revert` | Migraciones manuales |
 | `npm run format` | Prettier |
@@ -84,31 +85,73 @@ Dos ideas sostienen el diseño:
 - **Todo cambio de estado de un pedido pasa por `PedidosService.transicionar`**: bloquea el pedido, valida permisos y reglas, escribe la bitácora y avisa por socket y push.
 - **Tomar un pedido es atómico**: si dos repartidores lo intentan a la vez, uno recibe `409 PEDIDO_YA_TOMADO`.
 
+## Integración continua
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) corre en cada Pull Request y en cada push a `main` o `develop`: valida `openapi.yaml`, compila y ejecuta las 40 pruebas e2e contra PostgreSQL + PostGIS.
+
+Para que un PR con pruebas rojas no se pueda fusionar: **Settings → Branches → Add branch ruleset** sobre `main` y `develop`, con *Require a pull request before merging* y *Require status checks to pass* → `Contrato, build y pruebas e2e`.
+
 ## Despliegue
 
-### Supabase (solo base de datos)
+El orden importa: primero Supabase, luego Render (al arrancar crea las tablas), al final los datos.
 
-1. Crea el proyecto y copia la cadena **Session pooler** (Project Settings → Database → Connection string).
-2. Las tablas las crea la API al arrancar. Quedan con RLS activado y sin políticas, así que la Data API de Supabase no expone nada.
-3. Para imágenes: crea un bucket **público** llamado `papedir` en Storage y copia la `service_role key` (Project Settings → API). Esa llave solo va en Render, nunca en las apps.
+### 1. Supabase (base de datos e imágenes)
 
-### Render (Web Service)
+1. Crea el proyecto. Elige la región **East US (Ohio)** o la más cercana a la de Render, y guarda la contraseña de la base.
+2. **Database → Extensions → postgis → Enable**, con el esquema `extensions`. Si lo olvidas, la API lo instala ahí sola en el primer arranque.
+3. Botón **Connect** → **Transaction pooler** (puerto 6543). Esa es tu `DATABASE_URL`, con `DATABASE_SSL=true`.
+   - No uses la conexión directa (`db.<ref>.supabase.co`): es solo IPv6 y Render no la alcanza.
+   - Si la contraseña tiene `@ : / # ?`, codifícala: `node -e "console.log(encodeURIComponent('tu-pass'))"`.
+4. **Project Settings → API Keys** → copia la llave **secreta** (`sb_secret_...`) como `SUPABASE_SERVICE_KEY`. La URL del proyecto (`https://<ref>.supabase.co`) es `SUPABASE_URL`.
+5. Pon esos valores en tu `.env` y crea el bucket con su configuración (público, máximo 5 MB, solo JPG/PNG/WebP):
 
-| Campo | Valor |
+   ```bash
+   npm run verificar -- --configurar-bucket
+   ```
+
+Todas las tablas quedan con RLS activado y sin políticas: la Data API de Supabase no expone nada y el backend (dueño de las tablas) no se ve afectado.
+
+### 2. Render (API)
+
+**New → Blueprint** → elige este repositorio. [`render.yaml`](render.yaml) ya trae el build, el health check (`/api/v1/health`), Node 22 y genera `JWT_SECRET`. Render te pedirá:
+
+| Variable | Valor |
 |---|---|
-| Build Command | `npm install --include=dev && npm run build` |
-| Start Command | `npm run start:prod` |
-| Health Check Path | `/api/v1/health` |
+| `DATABASE_URL` | Transaction pooler de Supabase (puerto 6543) |
+| `SUPABASE_URL` · `SUPABASE_SERVICE_KEY` | Del paso 1 |
+| `FRONTEND_URL` | Dominio de Vercel, sin `/` al final (ej. `https://papedir-admin.vercel.app`) |
+| `FIREBASE_SERVICE_ACCOUNT_BASE64` | Opcional (paso 4); déjalo vacío por ahora |
 
-Variables de entorno: las de [`.env.example`](.env.example), con `NODE_ENV=production`, `DATABASE_SSL=true`, `FRONTEND_URL` con el dominio de Vercel y `PUBLIC_URL` con la URL del servicio.
+Cada push a `main` redespliega. El plan gratis se duerme a los 15 minutos sin tráfico y la primera petición tarda unos 50 segundos; para la demo, abre `/api/v1/health` unos minutos antes.
 
-Para cargar los datos de prueba en la base de Supabase, desde tu máquina:
+### 3. Datos de prueba en Supabase
+
+Desde tu máquina, con la `DATABASE_URL` de Supabase en `.env` (o en la línea de comandos):
 
 ```bash
-DATABASE_URL="<cadena de Supabase>" DATABASE_SSL=true npm run seed
+DATABASE_URL="<transaction pooler>" DATABASE_SSL=true npm run seed
+DATABASE_URL="<transaction pooler>" DATABASE_SSL=true npm run verificar
 ```
 
-## Pendiente
+### 4. Firebase (notificaciones push)
 
-- Notificaciones push reales: falta crear el proyecto de Firebase y poner `FIREBASE_SERVICE_ACCOUNT_BASE64`. Sin esa variable las notificaciones solo se escriben en el log.
-- GitHub Actions para correr las pruebas en cada PR.
+1. En la [consola de Firebase](https://console.firebase.google.com) crea el proyecto `papedir` (Analytics no hace falta).
+2. Agrega **3 apps Android** con estos nombres de paquete exactos y entrega cada `google-services.json` a quien hace esa app:
+   - `com.papedir.cliente` → Omar
+   - `com.papedir.tienda` → Omar
+   - `com.papedir.repartidor` → Dennis
+3. **Configuración del proyecto → Cuentas de servicio → Generar nueva clave privada**. Descarga el JSON y conviértelo a base64 en una sola línea:
+
+   ```bash
+   base64 -w0 cuenta.json                                               # Linux
+   base64 -i cuenta.json                                                # macOS
+   [Convert]::ToBase64String([IO.File]::ReadAllBytes("cuenta.json"))    # PowerShell
+   ```
+
+4. Pega el resultado en `FIREBASE_SERVICE_ACCOUNT_BASE64` (en `.env` y en Render) y prueba con un celular real:
+
+   ```bash
+   npm run verificar -- --push <fcmToken que imprime la app>
+   ```
+
+El JSON de la cuenta de servicio es una llave: no lo subas al repositorio ni lo mandes por el grupo; bórralo después de convertirlo.

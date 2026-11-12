@@ -1,0 +1,56 @@
+# Corre en cada Pull Request y en cada push a main/develop.
+# Si falla, el PR no debería fusionarse (actívalo en Settings → Branches → regla de protección).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, develop]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pruebas:
+    name: Contrato, build y pruebas e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: papedir
+          POSTGRES_PASSWORD: papedir
+          POSTGRES_DB: papedir_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U papedir -d papedir_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      TEST_DATABASE_URL: postgresql://papedir:papedir@localhost:5432/papedir_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Validar el contrato (openapi.yaml)
+        run: npx --yes @redocly/cli@2.77.0 lint docs/openapi.yaml
+
+      - name: Compilar
+        run: npm run build
+
+      - name: Pruebas e2e (PostgreSQL + PostGIS)
+        run: npm run test:e2e

@@ -60,7 +60,9 @@ export class FiltroErrores implements ExceptionFilter {
       // 413 = archivo demasiado grande; el contrato lo reporta como 400.
       const status = ex.getStatus() === 413 ? 400 : ex.getStatus();
       const cuerpo: any = ex.getResponse();
-      const message = typeof cuerpo === 'string' ? cuerpo : [].concat(cuerpo?.message ?? ex.message).join('; ');
+      const message = ex.getStatus() === 413
+        ? 'El archivo supera el máximo de 5 MB'
+        : typeof cuerpo === 'string' ? cuerpo : [].concat(cuerpo?.message ?? ex.message).join('; ');
       return res.status(status).json({ statusCode: status, error: CODIGOS[status] ?? 'ERROR', message });
     }
     this.log.error(ex?.stack ?? ex);
