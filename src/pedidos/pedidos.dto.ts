@@ -8,6 +8,8 @@ import { CoordenadasDto, PaginaDto } from '../common/dtos';
 export class ItemDto {
   @IsUUID() productoId: string;
   @IsInt() @Min(1) @Max(50) cantidad: number;
+  /** Ids de las opciones elegidas (tamaño, extras...), de los grupos de ese producto. */
+  @IsOptional() @IsArray() @ArrayMaxSize(40) @IsUUID('all', { each: true }) opciones?: string[];
 }
 
 export class CotizarPedidoDto {

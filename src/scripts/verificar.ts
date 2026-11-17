@@ -125,7 +125,7 @@ function seguridad() {
 }
 
 async function storage() {
-  seccion('Supabase Storage (imágenes)');
+  seccion('Supabase Storage (imágenes y documentos)');
   const url = process.env.SUPABASE_URL?.replace(/\/+$/, '');
   const llave = process.env.SUPABASE_SERVICE_KEY;
   const bucket = process.env.SUPABASE_BUCKET || 'papedir';
@@ -191,6 +191,54 @@ async function storage() {
   const publica = await fetch(`${url}/storage/v1/object/public/${bucket}/${ruta}`);
   if (publica.ok) ok('Subida y lectura pública de una imagen de prueba');
   else falla(`La imagen se subió pero su URL pública responde ${publica.status}`);
+  await fetch(`${url}/storage/v1/object/${bucket}/${ruta}`, { method: 'DELETE', headers: h }).catch(() => null);
+  await bucketPrivado(url, h);
+}
+
+/** Bucket privado para documentos (INE, licencia...): nunca público, solo enlaces firmados. */
+async function bucketPrivado(url: string, h: Record<string, string>) {
+  const bucket = process.env.SUPABASE_BUCKET_PRIVADO || 'papedir-privado';
+  const config = { public: false, file_size_limit: REGLAS.upload.maxBytes, allowed_mime_types: [...REGLAS.documentos.mimes] };
+  let r = await fetch(`${url}/storage/v1/bucket/${bucket}`, { headers: h });
+  if (!r.ok) {
+    if (!args.includes('--configurar-bucket')) {
+      return falla(`El bucket privado "${bucket}" no existe (documentos). Créalo con: npm run verificar -- --configurar-bucket`);
+    }
+    const c = await fetch(`${url}/storage/v1/bucket`, {
+      method: 'POST',
+      headers: { ...h, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: bucket, name: bucket, ...config }),
+    });
+    if (!c.ok) return falla(`No se pudo crear el bucket privado: ${c.status} ${await c.text()}`);
+    ok(`Bucket "${bucket}" creado (privado, máx. 5 MB, imágenes y PDF)`);
+    r = await fetch(`${url}/storage/v1/bucket/${bucket}`, { headers: h });
+  }
+  const b = await r.json();
+  if (b.public) {
+    if (!args.includes('--configurar-bucket')) {
+      return falla(`El bucket "${bucket}" es PÚBLICO: cualquiera podría ver las INE. Corrígelo con --configurar-bucket`);
+    }
+    const u = await fetch(`${url}/storage/v1/bucket/${bucket}`, {
+      method: 'PUT', headers: { ...h, 'Content-Type': 'application/json' }, body: JSON.stringify(config),
+    });
+    if (!u.ok) return falla(`No se pudo hacer privado el bucket: ${u.status} ${await u.text()}`);
+    ok(`Bucket "${bucket}" ajustado a privado`);
+  } else ok(`Bucket "${bucket}" privado (documentos)`);
+
+  // Prueba real: sube, firma un enlace, lo abre, confirma que no hay URL pública y borra.
+  const ruta = `verificacion/${Date.now()}.pdf`;
+  const subida = await fetch(`${url}/storage/v1/object/${bucket}/${ruta}`, {
+    method: 'POST', headers: { ...h, 'Content-Type': 'application/pdf' }, body: new Uint8Array(Buffer.from('%PDF-1.4\n%%EOF')),
+  });
+  if (!subida.ok) return falla(`No se pudo subir un documento de prueba: ${subida.status} ${await subida.text()}`);
+  const firma = await fetch(`${url}/storage/v1/object/sign/${bucket}/${ruta}`, {
+    method: 'POST', headers: { ...h, 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresIn: 60 }),
+  });
+  const { signedURL } = firma.ok ? await firma.json() : { signedURL: null };
+  const conFirma = signedURL ? await fetch(`${url}/storage/v1${signedURL}`) : null;
+  const publica = await fetch(`${url}/storage/v1/object/public/${bucket}/${ruta}`);
+  if (conFirma?.ok && !publica.ok) ok('Documento de prueba: se abre con enlace firmado y no tiene URL pública');
+  else falla(`Revisa el bucket privado: enlace firmado ${conFirma?.status ?? firma.status}, URL pública ${publica.status}`);
   await fetch(`${url}/storage/v1/object/${bucket}/${ruta}`, { method: 'DELETE', headers: h }).catch(() => null);
 }
 

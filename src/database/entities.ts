@@ -32,6 +32,34 @@ export class Usuario {
   @Column({ type: 'int', default: 0 }) intentosFallidos: number;
   @Column({ ...fecha, nullable: true }) bloqueadoHasta: Date | null;
   @Column({ ...fecha, nullable: true }) eliminadoEn: Date | null;
+  /** Solo repartidores: promedio de las calificaciones de los clientes. */
+  @Column({ type: 'numeric', precision: 3, scale: 2, nullable: true, transformer: dinero.transformer }) calificacion: number | null;
+  @CreateDateColumn(fecha) creadoEn: Date;
+}
+
+@Entity('vehiculos')
+export class Vehiculo {
+  @PrimaryColumn('uuid') repartidorId: string;
+  @Column({ type: 'text' }) tipo: 'moto' | 'bicicleta' | 'auto';
+  @Column({ type: 'text', nullable: true }) marca: string | null;
+  @Column({ type: 'text', nullable: true }) modelo: string | null;
+  @Column() color: string;
+  @Column({ type: 'text', nullable: true }) placa: string | null;
+  @UpdateDateColumn(fecha) actualizadoEn: Date;
+}
+
+/** Documentos privados (INE, licencia...). El archivo vive en un bucket privado; aquí solo su ruta. */
+@Entity('documentos')
+export class Documento {
+  @PrimaryGeneratedColumn('uuid') id: string;
+  @Column('uuid') usuarioId: string;
+  @Column() tipo: string;
+  @Column() ruta: string;
+  @Column() mime: string;
+  @Column({ type: 'text', default: 'pendiente' }) estado: 'pendiente' | 'aprobado' | 'rechazado';
+  @Column({ type: 'text', nullable: true }) motivo: string | null;
+  @Column({ type: 'uuid', nullable: true }) revisadoPor: string | null;
+  @Column({ ...fecha, nullable: true }) revisadoEn: Date | null;
   @CreateDateColumn(fecha) creadoEn: Date;
 }
 
@@ -93,7 +121,8 @@ export class Direccion {
 @Entity('tiendas')
 export class Tienda {
   @PrimaryGeneratedColumn('uuid') id: string;
-  @Column({ type: 'uuid', unique: true }) ownerId: string;
+  /** Un dueño puede tener varias sucursales. */
+  @Column('uuid') ownerId: string;
   @Column() nombre: string;
   @Column() categoria: string;
   @Column({ nullable: true }) descripcion: string | null;
@@ -104,8 +133,23 @@ export class Tienda {
   @Column('double precision') lng: number;
   @Column({ default: false }) abierta: boolean;
   @Column({ type: 'int', default: 20 }) tiempoPreparacionMin: number;
+  /** true = además de `abierta`, solo recibe pedidos dentro de su horario semanal. */
+  @Column({ default: false }) usarHorario: boolean;
+  /** Pausa temporal: no recibe pedidos hasta esta hora. */
+  @Column({ ...fecha, nullable: true }) pausadaHasta: Date | null;
   @Column({ type: 'numeric', precision: 3, scale: 2, nullable: true, transformer: dinero.transformer }) calificacion: number | null;
   @CreateDateColumn(fecha) creadoEn: Date;
+}
+
+@Entity('horarios_tienda')
+export class HorarioTienda {
+  @PrimaryGeneratedColumn('uuid') id: string;
+  @Column('uuid') tiendaId: string;
+  /** 0 = domingo … 6 = sábado */
+  @Column('smallint') dia: number;
+  /** 'HH:MM:SS' en hora de Celaya */
+  @Column('time') abre: string;
+  @Column('time') cierra: string;
 }
 
 @Entity('categorias_producto')
@@ -129,8 +173,34 @@ export class Producto {
   @Column({ default: true }) disponible: boolean;
   /** Borrado lógico: los pedidos pasados siguen apuntando al producto. */
   @Column({ default: false }) eliminado: boolean;
+  /** Inventario: null = sin control de existencias. Baja al crear pedidos y regresa si se cancelan. */
+  @Column({ type: 'int', nullable: true }) stock: number | null;
+  @Column({ type: 'jsonb', default: () => "'[]'" }) imagenes: string[];
   @CreateDateColumn(fecha) creadoEn: Date;
 }
+
+/** Grupo de opciones de un producto (ej. "Tamaño": elegir 1; "Extras": hasta 3). */
+@Entity('grupos_opciones')
+export class GrupoOpciones {
+  @PrimaryGeneratedColumn('uuid') id: string;
+  @Column('uuid') productoId: string;
+  @Column() nombre: string;
+  @Column({ type: 'int', default: 0 }) minimo: number;
+  @Column({ type: 'int', default: 1 }) maximo: number;
+  @Column({ type: 'int', default: 0 }) orden: number;
+}
+
+@Entity('opciones')
+export class Opcion {
+  @PrimaryGeneratedColumn('uuid') id: string;
+  @Column('uuid') grupoId: string;
+  @Column() nombre: string;
+  @Column(dinero) precioExtra: number;
+  @Column({ default: true }) disponible: boolean;
+  @Column({ type: 'int', default: 0 }) orden: number;
+}
+
+export type OpcionElegida = { grupo: string; nombre: string; precioExtra: number };
 
 @Entity('viajes')
 export class Viaje {
@@ -182,7 +252,9 @@ export class PedidoItem {
   /** Nombre y precio se copian al crear el pedido. */
   @Column() nombre: string;
   @Column('int') cantidad: number;
+  /** Precio del producto + extras de las opciones elegidas. */
   @Column(dinero) precioUnitario: number;
+  @Column({ type: 'jsonb', default: () => "'[]'" }) opciones: OpcionElegida[];
 }
 
 @Entity('eventos_pedido')
@@ -236,5 +308,5 @@ export class Mensaje {
 
 export const ENTIDADES = [
   Usuario, CodigoVerificacion, EventoCuenta, RefreshToken, Dispositivo, Direccion, Tienda, CategoriaProducto, Producto, Viaje, Pedido, PedidoItem,
-  EventoPedido, Calificacion, Ticket, Mensaje,
+  EventoPedido, Calificacion, Ticket, Mensaje, Vehiculo, Documento, HorarioTienda, GrupoOpciones, Opcion,
 ];

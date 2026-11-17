@@ -187,6 +187,9 @@ El campo `error` es un código estable; las apps deciden con él, no con el text
 | `CODIGO_INVALIDO` | Código de correo incorrecto, vencido o ya usado | Pedir que lo revise o enviar otro |
 | `PASSWORD_INCORRECTA` | Contraseña actual equivocada al cambiarla o al eliminar la cuenta | Marcar el campo |
 | `TIENE_PEDIDOS_ACTIVOS` | Quiere eliminar su cuenta con pedidos en curso | Aviso: terminar o cancelar primero |
+| `TIENDA_CERRADA` | Tienda cerrada, en pausa o fuera de horario | Mostrar `message` y regresar al listado |
+| `DOCUMENTO_APROBADO` | Quiere reemplazar un documento ya aprobado | Aviso: pedirlo a soporte |
+| `LIMITE_SUCURSALES` | Ya tiene 10 sucursales | Aviso |
 
 La lista completa está en el schema `Error` de `openapi.yaml`. Todos los valores numéricos (montos, distancias, tiempos) están en la sección de reglas de negocio de la Definición del proyecto.
 
@@ -199,6 +202,21 @@ La lista completa está en el schema `Error` de `openapi.yaml`. Todos los valore
 - Después del login se registra el token de FCM con `PUT /usuarios/me/dispositivo`.
 - El registro envía `aceptoTerminos: true` después de mostrar las ligas de `GET /legal`. Si `usuario.terminosPendientes` es `true`, la app pide aceptar los nuevos con `POST /usuarios/me/terminos`.
 - Cuentas (las 3 apps): recuperar contraseña (`/auth/recuperar` → `/auth/restablecer`), verificar correo (opcional), cambiar contraseña, foto de perfil (`/uploads` con `tipo = perfil`), cerrar sesión en todos lados y eliminar cuenta (`DELETE /usuarios/me`). Las tiendas de Apple y Google exigen poder eliminar la cuenta desde la app.
+
+### Sucursales (App Tienda)
+
+- Un dueño puede tener varias sucursales: `GET /tiendas/mias` y `POST /tiendas/mias`.
+- Para trabajar con una sucursal, la app manda el header `X-Tienda-Id` en las rutas `/tiendas/mia...`, `GET /pedidos` y los pedidos manuales. Sin header se usa la primera sucursal, así que una app que no maneje sucursales sigue funcionando igual.
+- Mostrar `abiertaAhora` (no `abierta`): considera el interruptor de la tienda, la pausa temporal (`/tiendas/mia/pausa`) y el horario semanal (`/tiendas/mia/horario`).
+- Productos: varias fotos (`imagenes`), inventario (`stock`, `null` = sin control) y opciones (`PUT /productos/{id}/opciones`). Para mostrar "Agotado" usar `agotado`.
+
+### Opciones en el carrito (App Cliente)
+
+Cada producto del menú trae `grupos` (por ejemplo "Salsa: elige 1", "Extras: hasta 3"). En el carrito cada elemento manda `opciones: [ids]`; el mismo producto con opciones distintas va en elementos separados. Si una opción obligatoria falta, el backend responde 400 con el grupo en `message`. El pedido muestra `etaMin` (minutos aproximados de llegada) y, con repartidor, su `vehiculo`, `fotoUrl` y `calificacion`.
+
+### Repartidor (App Repartidor)
+
+Vehículo (`/repartidor/vehiculo`), documentos (`GET/POST /documentos`: INE y licencia obligatorias), ganancias y corte de efectivo del día (`/repartidor/ganancias`), y `etaMin` en cada parada del viaje.
 
 ### Estados del pedido
 

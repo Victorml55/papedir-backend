@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: PaPedir API
-  version: 1.1.0
+  version: 1.2.0
   description: |
     Contrato de la API de PaPedir, plataforma de reparto a domicilio en Celaya, Gto.
 
@@ -45,7 +45,9 @@ tags:
   - name: Admin
     description: Web (rol admin)
   - name: Archivos
-    description: Subida de imágenes (productos, tiendas, evidencia de entrega)
+    description: Subida de imágenes (productos, tiendas, perfil, evidencia de entrega)
+  - name: Documentos
+    description: Documentos privados de repartidores y tiendas (INE, licencia...) y su revisión por soporte
 
 security:
   - bearerAuth: []
@@ -530,13 +532,20 @@ paths:
     get:
       operationId: obtenerTiendasPorId
       tags: [Tiendas]
-      summary: Detalle de una tienda
+      summary: Detalle de una tienda, con su horario semanal
       responses:
         '200':
           description: OK
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Tienda' }
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Tienda'
+                  - type: object
+                    properties:
+                      horario:
+                        type: array
+                        items: { $ref: '#/components/schemas/Turno' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /tiendas/{id}/menu:
@@ -546,7 +555,9 @@ paths:
       operationId: obtenerMenuTienda
       tags: [Tiendas]
       summary: Menú de una tienda agrupado por categorías (rol cliente)
-      description: Solo categorías con productos; los productos agotados vienen con `disponible = false`.
+      description: |
+        Solo categorías con productos. Los agotados vienen con `agotado = true` (sin existencia o stock en 0):
+        se muestran pero no se pueden pedir. Cada producto trae sus `grupos` de opciones.
       responses:
         '200':
           description: OK
@@ -557,7 +568,50 @@ paths:
                 items: { $ref: '#/components/schemas/MenuCategoria' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /tiendas/mias:
+    get:
+      operationId: listarMisSucursales
+      tags: [Tiendas]
+      summary: Mis sucursales (rol tienda)
+      description: |
+        Un dueño puede tener varias sucursales. Las rutas `/tiendas/mia...`, `GET /pedidos` y los pedidos manuales
+        trabajan con la sucursal indicada en el header `X-Tienda-Id`; sin header, con la primera (la más antigua).
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Tienda' }
+    post:
+      operationId: crearSucursal
+      tags: [Tiendas]
+      summary: Agregar una sucursal (rol tienda)
+      description: |
+        Solo con la cuenta aprobada (`CUENTA_PENDIENTE`). Nace cerrada. Con `copiarMenuDe` copia categorías,
+        productos y opciones de otra sucursal propia (sin inventario). Máximo 10 sucursales (`LIMITE_SUCURSALES`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SucursalInput' }
+      responses:
+        '201':
+          description: Creada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tienda' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409':
+          description: Cuenta sin aprobar o límite de sucursales
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /tiendas/mia:
+    parameters:
+      - $ref: '#/components/parameters/TiendaSel'
     get:
       operationId: obtenerMiTienda
       tags: [Tiendas]
@@ -585,7 +639,108 @@ paths:
               schema: { $ref: '#/components/schemas/Tienda' }
         '400': { $ref: '#/components/responses/ValidationError' }
 
+  /tiendas/mia/horario:
+    parameters:
+      - $ref: '#/components/parameters/TiendaSel'
+    get:
+      operationId: obtenerMiHorario
+      tags: [Tiendas]
+      summary: Horario semanal de mi tienda (rol tienda)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Horario' }
+    put:
+      operationId: guardarMiHorario
+      tags: [Tiendas]
+      summary: Reemplazar el horario semanal (rol tienda)
+      description: |
+        Con `usarHorario = true` la tienda solo recibe pedidos dentro de sus turnos (además de estar `abierta`).
+        Horas en hora de Celaya. `dia`: 0 = domingo … 6 = sábado. Puede haber varios turnos por día.
+        `cierra = "24:00"` = hasta la medianoche; si `cierra` es menor que `abre`, el turno termina al día siguiente
+        y cuenta para el día en que abre.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [usarHorario, turnos]
+              properties:
+                usarHorario: { type: boolean }
+                turnos:
+                  type: array
+                  maxItems: 28
+                  items: { $ref: '#/components/schemas/Turno' }
+      responses:
+        '200':
+          description: Guardado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Horario' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /tiendas/mia/pausa:
+    parameters:
+      - $ref: '#/components/parameters/TiendaSel'
+    post:
+      operationId: pausarMiTienda
+      tags: [Tiendas]
+      summary: Dejar de recibir pedidos por un rato (rol tienda)
+      description: Útil cuando la cocina está saturada. Se quita sola al cumplirse el tiempo.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [minutos]
+              properties:
+                minutos: { type: integer, minimum: 5, maximum: 240, example: 30 }
+      responses:
+        '200':
+          description: Pausada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tienda' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+    delete:
+      operationId: quitarPausaMiTienda
+      tags: [Tiendas]
+      summary: Volver a recibir pedidos (rol tienda)
+      responses:
+        '200':
+          description: Sin pausa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tienda' }
+
+  /tiendas/mia/reporte:
+    parameters:
+      - $ref: '#/components/parameters/TiendaSel'
+    get:
+      operationId: reporteVentas
+      tags: [Tiendas]
+      summary: Reporte de ventas de mi tienda (rol tienda)
+      description: |
+        Por fecha de creación del pedido, en hora de Celaya. `ventas` = productos de los pedidos entregados
+        (lo que la tienda cobra al repartidor; el envío no cuenta). Rango máximo de 92 días.
+      parameters:
+        - $ref: '#/components/parameters/Desde'
+        - $ref: '#/components/parameters/Hasta'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReporteVentas' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
   /tiendas/mia/productos:
+    parameters:
+      - $ref: '#/components/parameters/TiendaSel'
     get:
       operationId: listarMisProductos
       tags: [Productos]
@@ -600,6 +755,8 @@ paths:
                 items: { $ref: '#/components/schemas/Producto' }
 
   /tiendas/mia/categorias:
+    parameters:
+      - $ref: '#/components/parameters/TiendaSel'
     get:
       operationId: listarMisCategorias
       tags: [Productos]
@@ -680,6 +837,38 @@ paths:
               schema: { $ref: '#/components/schemas/Producto' }
         '400': { $ref: '#/components/responses/ValidationError' }
 
+  /productos/{id}/opciones:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    put:
+      operationId: guardarOpcionesProducto
+      tags: [Productos]
+      summary: Reemplazar las opciones de un producto (tamaño, salsas, extras...)
+      description: |
+        Reemplaza todos los grupos. `minimo = 0` = opcional; `minimo ≥ 1` = obligatorio.
+        `maximo` no puede ser mayor que el número de opciones. Las opciones reciben ids nuevos en cada cambio;
+        los pedidos anteriores guardan su propia copia. `[]` quita todas las opciones.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [grupos]
+              properties:
+                grupos:
+                  type: array
+                  maxItems: 10
+                  items: { $ref: '#/components/schemas/GrupoOpcionesInput' }
+      responses:
+        '200':
+          description: Guardadas
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Producto' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /productos/{id}:
     parameters:
       - $ref: '#/components/parameters/Id'
@@ -716,9 +905,10 @@ paths:
       summary: Listar pedidos según el rol
       description: |
         - cliente: sus pedidos
-        - tienda: pedidos de su tienda
+        - tienda: con `X-Tienda-Id`, los de esa sucursal; sin header, los de todas sus sucursales
         - repartidor: usar /repartidor/historial
       parameters:
+        - $ref: '#/components/parameters/TiendaSel'
         - name: estado
           in: query
           description: Uno o varios estados separados por coma
@@ -792,6 +982,8 @@ paths:
       operationId: cotizarPedidoManual
       tags: [Pedidos]
       summary: Cotizar el envío de un pedido manual (rol tienda)
+      parameters:
+        - $ref: '#/components/parameters/TiendaSel'
       requestBody:
         required: true
         content:
@@ -819,6 +1011,8 @@ paths:
       operationId: crearPedidoManual
       tags: [Pedidos]
       summary: Crear pedido manual capturando los datos del cliente (rol tienda)
+      parameters:
+        - $ref: '#/components/parameters/TiendaSel'
       description: |
         Para vendedores independientes o tiendas con ventas externas. No requiere cliente registrado.
         Nace en estado `listo_para_recoger`. El destinatario paga en efectivo `montoACobrar` + costo de envío.
@@ -967,6 +1161,56 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
 
   # ─────────────────────────── REPARTIDOR ───────────────────────────
+  /repartidor/vehiculo:
+    get:
+      operationId: obtenerMiVehiculo
+      tags: [Repartidor]
+      summary: Mi vehículo
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Vehiculo' }
+        '204': { description: Aún no registra su vehículo }
+    put:
+      operationId: guardarMiVehiculo
+      tags: [Repartidor]
+      summary: Registrar o cambiar mi vehículo
+      description: El cliente lo ve en su pedido para reconocer al repartidor. La placa es obligatoria salvo en bicicleta.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Vehiculo' }
+      responses:
+        '200':
+          description: Guardado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Vehiculo' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /repartidor/ganancias:
+    get:
+      operationId: misGanancias
+      tags: [Repartidor]
+      summary: Ganancias y corte de efectivo por día
+      description: |
+        Pedidos entregados por día (hora de Celaya). En cada pedido el repartidor paga los productos a la tienda,
+        cobra el total al cliente y se queda con el envío. Con `desde = hasta = hoy` es el corte de caja del día.
+        Por defecto, los últimos 7 días. Rango máximo de 92 días.
+      parameters:
+        - $ref: '#/components/parameters/Desde'
+        - $ref: '#/components/parameters/Hasta'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ganancias' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
   /repartidor/disponibilidad:
     patch:
       operationId: actualizarRepartidorDisponibilidad
@@ -1179,6 +1423,59 @@ paths:
                   meta: { $ref: '#/components/schemas/PaginaMeta' }
 
   # ─────────────────────────── ARCHIVOS ───────────────────────────
+  /documentos:
+    get:
+      operationId: misDocumentos
+      tags: [Documentos]
+      summary: Documentos que pide mi rol y el estado de cada uno (repartidor y tienda)
+      responses:
+        '200':
+          description: Uno por tipo de documento de su rol
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    tipo: { $ref: '#/components/schemas/TipoDocumento' }
+                    nombre: { type: string, example: INE }
+                    requerido: { type: boolean, description: Soporte lo necesita aprobado para aprobar la cuenta }
+                    documento:
+                      allOf: [{ $ref: '#/components/schemas/Documento' }]
+                      nullable: true
+                      type: object
+    post:
+      operationId: subirDocumento
+      tags: [Documentos]
+      summary: Subir o reemplazar un documento (repartidor y tienda)
+      description: |
+        JPG, PNG, WebP o PDF de hasta 5 MB. Se guarda en un bucket privado: nadie tiene una URL pública.
+        Uno por tipo; al reemplazarlo vuelve a `pendiente`. Uno aprobado ya no se puede reemplazar (`DOCUMENTO_APROBADO`).
+        Repartidor: ine, licencia, tarjeta_circulacion, comprobante_domicilio. Tienda: ine, comprobante_domicilio, constancia_fiscal.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [archivo, tipo]
+              properties:
+                archivo: { type: string, format: binary }
+                tipo: { $ref: '#/components/schemas/TipoDocumento' }
+      responses:
+        '201':
+          description: Subido, pendiente de revisión
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Documento' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409':
+          description: Ya está aprobado (`DOCUMENTO_APROBADO`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /uploads:
     post:
       operationId: subirImagen
@@ -1515,6 +1812,68 @@ paths:
                 type: array
                 items: { $ref: '#/components/schemas/EventoCuenta' }
 
+  /soporte/usuarios/{id}/documentos:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: documentosDeUsuario
+      tags: [Soporte]
+      summary: Documentos subidos por una cuenta
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Documento' }
+
+  /soporte/documentos/{id}/archivo:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: enlaceDocumento
+      tags: [Soporte]
+      summary: Enlace temporal para ver el archivo de un documento
+      description: El enlace vence en 10 minutos; pide uno nuevo cada vez que se abra el documento.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url: { type: string, description: 'URL firmada (en desarrollo, un data: URL)' }
+                  expiraEn: { type: string, format: date-time }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /soporte/documentos/{id}/revisar:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: revisarDocumento
+      tags: [Soporte]
+      summary: Aprobar o rechazar un documento
+      description: Al rechazar, `motivo` es obligatorio; el usuario lo ve y recibe una notificación.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [aprobado]
+              properties:
+                aprobado: { type: boolean }
+                motivo: { type: string, maxLength: 300, example: La foto está borrosa }
+      responses:
+        '200':
+          description: Revisado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Documento' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
   /soporte/usuarios/{id}/desbloquear:
     parameters:
       - $ref: '#/components/parameters/Id'
@@ -1654,6 +2013,22 @@ components:
       in: path
       required: true
       schema: { type: string, format: uuid }
+    TiendaSel:
+      name: X-Tienda-Id
+      in: header
+      required: false
+      description: Sucursal con la que se trabaja (rol tienda). Sin header, la primera sucursal del dueño.
+      schema: { type: string, format: uuid }
+    Desde:
+      name: desde
+      in: query
+      description: YYYY-MM-DD (hora de Celaya). Por defecto, 6 días antes de `hasta`.
+      schema: { type: string, format: date, example: '2026-11-01' }
+    Hasta:
+      name: hasta
+      in: query
+      description: YYYY-MM-DD (hora de Celaya), incluido. Por defecto, hoy.
+      schema: { type: string, format: date, example: '2026-11-07' }
     Page:
       name: page
       in: query
@@ -1725,7 +2100,7 @@ components:
             VIAJE_LLENO, NO_ENCADENABLE, VIAJE_ACTIVO, CODIGO_INCORRECTO, TICKET_DUPLICADO, CALIFICACION_INVALIDA,
             REPARTIDOR_DESCONECTADO, CATEGORIA_CON_PRODUCTOS, TICKET_CERRADO, DEMASIADAS_PETICIONES, ERROR_INTERNO,
             CUENTA_BLOQUEADA, CODIGO_INVALIDO, PASSWORD_INCORRECTA, CORREO_YA_VERIFICADO, VERSION_TERMINOS,
-            TIENE_PEDIDOS_ACTIVOS, ULTIMO_ADMIN
+            TIENE_PEDIDOS_ACTIVOS, ULTIMO_ADMIN, LIMITE_SUCURSALES, DOCUMENTO_APROBADO, DOCUMENTOS_INCOMPLETOS
           example: PEDIDO_YA_TOMADO
         message: { type: string, example: El pedido ya fue tomado por otro repartidor }
         detalles:
@@ -1828,6 +2203,11 @@ components:
         terminosPendientes:
           type: boolean
           description: true si no ha aceptado la versión vigente de los términos; la app debe pedirlo
+        calificacion:
+          type: number
+          nullable: true
+          description: Solo repartidores, promedio de 1 a 5
+          example: 4.8
         creadoEn: { type: string, format: date-time }
 
     UsuarioDetalle:
@@ -1852,6 +2232,14 @@ components:
                   id: { type: string, format: uuid }
                   nombre: { type: string }
                   abierta: { type: boolean }
+            vehiculo:
+              allOf: [{ $ref: '#/components/schemas/Vehiculo' }]
+              nullable: true
+              type: object
+            documentosCompletos:
+              type: boolean
+              nullable: true
+              description: Repartidor y tienda; true si sus documentos requeridos están aprobados
 
     EventoCuenta:
       type: object
@@ -1861,7 +2249,8 @@ components:
           type: string
           description: |
             registrada, creada_por_admin, aprobada, baneada, desbaneada, bloqueada, desbloqueada,
-            password_cambiada, password_restablecida, correo_verificado, terminos_aceptados, eliminada
+            password_cambiada, password_restablecida, correo_verificado, terminos_aceptados, eliminada,
+            documento_aprobado, documento_rechazado
           example: bloqueada
         actorId: { type: string, format: uuid, nullable: true, description: Quién lo hizo; null si fue el sistema }
         actorRol:
@@ -1969,7 +2358,12 @@ components:
         telefono: { type: string, example: '4615550000' }
         direccion: { type: string, example: 'Calle Hidalgo 120, Celaya' }
         ubicacion: { $ref: '#/components/schemas/Coordenadas' }
-        abierta: { type: boolean, example: true }
+        abierta: { type: boolean, example: true, description: Interruptor general que maneja la tienda }
+        abiertaAhora:
+          type: boolean
+          description: Recibe pedidos en este momento (abierta, sin pausa y dentro de su horario). Lo que debe mostrar la app.
+        pausadaHasta: { type: string, format: date-time, nullable: true }
+        usarHorario: { type: boolean }
         tiempoPreparacionMin: { type: integer, example: 20 }
         calificacion: { type: number, nullable: true, minimum: 1, maximum: 5, example: 4.7 }
         distanciaKm:
@@ -1992,6 +2386,81 @@ components:
           type: boolean
           description: Una tienda pendiente de aprobación no puede abrir (409 CUENTA_PENDIENTE)
         tiempoPreparacionMin: { type: integer, minimum: 5, maximum: 120 }
+
+    SucursalInput:
+      type: object
+      required: [nombre, categoria, direccion, ubicacion]
+      properties:
+        nombre: { type: string, maxLength: 80, example: Tacos Don Pepe Norte }
+        categoria: { $ref: '#/components/schemas/CategoriaTienda' }
+        descripcion: { type: string }
+        telefono: { type: string, example: '4615550000' }
+        direccion: { type: string }
+        ubicacion: { $ref: '#/components/schemas/Coordenadas' }
+        tiempoPreparacionMin: { type: integer, minimum: 5, maximum: 120 }
+        copiarMenuDe: { type: string, format: uuid, description: Id de otra sucursal propia }
+
+    Turno:
+      type: object
+      required: [dia, abre, cierra]
+      properties:
+        dia: { type: integer, minimum: 0, maximum: 6, description: '0 = domingo … 6 = sábado' }
+        abre: { type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$', example: '09:00' }
+        cierra: { type: string, example: '22:00', description: '"24:00" = medianoche' }
+
+    Horario:
+      type: object
+      properties:
+        usarHorario: { type: boolean }
+        turnos:
+          type: array
+          items: { $ref: '#/components/schemas/Turno' }
+        abiertaAhora: { type: boolean }
+
+    ReporteVentas:
+      type: object
+      properties:
+        tiendaId: { type: string, format: uuid }
+        desde: { type: string, format: date }
+        hasta: { type: string, format: date }
+        resumen:
+          type: object
+          properties:
+            pedidosEntregados: { type: integer }
+            pedidosManuales: { type: integer }
+            cancelados: { type: integer }
+            rechazados: { type: integer }
+            enCurso: { type: integer }
+            ventas: { type: number, example: 4250.5 }
+            ticketPromedio: { type: number, example: 152.3 }
+            calificacionPromedio: { type: number, nullable: true }
+            calificaciones: { type: integer }
+        porDia:
+          type: array
+          items:
+            type: object
+            properties:
+              fecha: { type: string, format: date }
+              pedidos: { type: integer }
+              ventas: { type: number }
+        porHora:
+          type: array
+          description: Pedidos entregados por hora del día (0-23); para ver las horas pico
+          items:
+            type: object
+            properties:
+              hora: { type: integer, minimum: 0, maximum: 23 }
+              pedidos: { type: integer }
+        productosMasVendidos:
+          type: array
+          maxItems: 10
+          items:
+            type: object
+            properties:
+              productoId: { type: string, format: uuid }
+              nombre: { type: string }
+              cantidad: { type: integer }
+              importe: { type: number }
 
     CategoriaProductoInput:
       type: object
@@ -2023,11 +2492,23 @@ components:
         nombre: { type: string, example: Orden de pastor }
         descripcion: { type: string, nullable: true, example: 5 tacos con piña }
         precio: { type: number, minimum: 0, example: 85.0 }
-        imagenUrl: { type: string, nullable: true }
+        imagenUrl: { type: string, nullable: true, description: Foto principal; si mandas `imagenes` se toma la primera }
+        imagenes:
+          type: array
+          maxItems: 5
+          items: { type: string }
+          description: Hasta 5 fotos (URLs de POST /uploads); la primera es la principal
         disponible:
           type: boolean
           default: true
-          description: false = agotado (se muestra pero no se puede pedir)
+          description: false = la tienda lo marcó agotado
+        stock:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: |
+            Existencias. null = sin control de inventario. Baja al crear un pedido y regresa si se cancela o rechaza.
+            En 0 el producto queda agotado.
 
     Producto:
       allOf:
@@ -2035,7 +2516,47 @@ components:
           properties:
             id: { type: string, format: uuid }
             tiendaId: { type: string, format: uuid }
+            agotado: { type: boolean, description: '`!disponible` o `stock = 0`. Lo que deben usar las apps para mostrar "Agotado".' }
+            grupos:
+              type: array
+              items: { $ref: '#/components/schemas/GrupoOpciones' }
         - $ref: '#/components/schemas/ProductoInput'
+
+    GrupoOpcionesInput:
+      type: object
+      required: [nombre, minimo, maximo, opciones]
+      properties:
+        nombre: { type: string, maxLength: 40, example: Salsa }
+        minimo: { type: integer, minimum: 0, example: 1, description: 0 = opcional }
+        maximo: { type: integer, minimum: 1, example: 1 }
+        opciones:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            type: object
+            required: [nombre]
+            properties:
+              nombre: { type: string, maxLength: 60, example: Verde }
+              precioExtra: { type: number, minimum: 0, default: 0 }
+              disponible: { type: boolean, default: true }
+
+    GrupoOpciones:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        nombre: { type: string, example: Extras }
+        minimo: { type: integer, example: 0 }
+        maximo: { type: integer, example: 3 }
+        opciones:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string, format: uuid }
+              nombre: { type: string, example: Queso }
+              precioExtra: { type: number, example: 15 }
+              disponible: { type: boolean }
 
     # ── Pedidos ──
     EstadoPedido:
@@ -2071,6 +2592,12 @@ components:
             properties:
               productoId: { type: string, format: uuid }
               cantidad: { type: integer, minimum: 1, example: 2 }
+              opciones:
+                type: array
+                description: |
+                  Ids de las opciones elegidas. Deben cumplir el mínimo y máximo de cada grupo del producto.
+                  El mismo producto con opciones distintas va en elementos separados.
+                items: { type: string, format: uuid }
 
     Cotizacion:
       type: object
@@ -2105,6 +2632,12 @@ components:
             properties:
               productoId: { type: string, format: uuid }
               cantidad: { type: integer, minimum: 1, example: 2 }
+              opciones:
+                type: array
+                description: |
+                  Ids de las opciones elegidas. Deben cumplir el mínimo y máximo de cada grupo del producto.
+                  El mismo producto con opciones distintas va en elementos separados.
+                items: { type: string, format: uuid }
 
     PedidoManualRequest:
       type: object
@@ -2150,6 +2683,12 @@ components:
           nullable: true
           allOf:
             - $ref: '#/components/schemas/Coordenadas'
+        fotoUrl: { type: string, nullable: true }
+        calificacion: { type: number, nullable: true, example: 4.8 }
+        vehiculo:
+          allOf: [{ $ref: '#/components/schemas/Vehiculo' }]
+          nullable: true
+          type: object
 
     PedidoItem:
       type: object
@@ -2157,7 +2696,16 @@ components:
         productoId: { type: string, format: uuid }
         nombre: { type: string, example: Orden de pastor }
         cantidad: { type: integer, example: 2 }
-        precioUnitario: { type: number, example: 85.0 }
+        precioUnitario: { type: number, example: 100.0, description: Precio del producto + extras de las opciones }
+        opciones:
+          type: array
+          description: Copia de las opciones elegidas al crear el pedido
+          items:
+            type: object
+            properties:
+              grupo: { type: string, example: Extras }
+              nombre: { type: string, example: Queso }
+              precioExtra: { type: number, example: 15 }
         importe: { type: number, example: 170.0 }
 
     Pedido:
@@ -2204,6 +2752,12 @@ components:
           type: object
         notas: { type: string, nullable: true }
         repartidor: { $ref: '#/components/schemas/RepartidorResumen' }
+        etaMin:
+          type: integer
+          nullable: true
+          description: |
+            Minutos aproximados para que llegue al cliente (preparación, posición del repartidor y distancia).
+            0 en el domicilio; null si el pedido ya terminó.
         viajeId: { type: string, format: uuid, nullable: true }
         creadoEn: { type: string, format: date-time }
         actualizadoEn: { type: string, format: date-time }
@@ -2285,9 +2839,72 @@ components:
               direccion: { type: string }
               ubicacion: { $ref: '#/components/schemas/Coordenadas' }
               completada: { type: boolean }
+              etaMin:
+                type: integer
+                nullable: true
+                description: Minutos aproximados para llegar a esta parada siguiendo el orden; null si ya se completó
         pedidos:
           type: array
           items: { $ref: '#/components/schemas/Pedido' }
+
+    Vehiculo:
+      type: object
+      required: [tipo, color]
+      properties:
+        tipo:
+          type: string
+          enum: [moto, bicicleta, auto]
+        marca: { type: string, nullable: true, example: Italika }
+        modelo: { type: string, nullable: true, example: FT150 }
+        color: { type: string, example: Rojo }
+        placa: { type: string, nullable: true, example: GTO123A, description: Obligatoria salvo en bicicleta }
+
+    Ganancias:
+      type: object
+      properties:
+        desde: { type: string, format: date }
+        hasta: { type: string, format: date }
+        resumen:
+          type: object
+          properties:
+            pedidos: { type: integer }
+            viajes: { type: integer }
+            gananciaEnvio: { type: number, example: 412.0, description: Lo que gana el repartidor }
+            efectivoCobrado: { type: number, example: 2380.0, description: Total cobrado a clientes }
+            pagadoATiendas: { type: number, example: 1968.0, description: Productos pagados a las tiendas }
+            kmRecorridos: { type: number, description: Distancia tienda → cliente de los pedidos (aproximada) }
+            calificacion: { type: number, nullable: true }
+            calificaciones: { type: integer }
+        porDia:
+          type: array
+          items:
+            type: object
+            properties:
+              fecha: { type: string, format: date }
+              pedidos: { type: integer }
+              viajes: { type: integer }
+              gananciaEnvio: { type: number }
+              efectivoCobrado: { type: number }
+              pagadoATiendas: { type: number }
+              kmRecorridos: { type: number }
+
+    # ── Documentos ──
+    TipoDocumento:
+      type: string
+      enum: [ine, licencia, tarjeta_circulacion, comprobante_domicilio, constancia_fiscal]
+
+    Documento:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        tipo: { $ref: '#/components/schemas/TipoDocumento' }
+        nombre: { type: string, example: Licencia de manejo }
+        estado:
+          type: string
+          enum: [pendiente, aprobado, rechazado]
+        motivo: { type: string, nullable: true, description: Por qué se rechazó }
+        creadoEn: { type: string, format: date-time }
+        revisadoEn: { type: string, format: date-time, nullable: true }
 
     # ── Tickets ──
     EstadoTicket:
