@@ -7,6 +7,7 @@ import { pagina } from '../common/dtos';
 import { conflicto, noEncontrado } from '../common/errores';
 import { ESTADOS_FINALES, EstadoPedido } from '../config/reglas';
 import { Pedido, Tienda, Usuario } from '../database/entities';
+import { BitacoraCuentasService } from '../nucleo/bitacora-cuentas.service';
 import { PushService } from '../nucleo/push.service';
 import { RealtimeService } from '../nucleo/realtime.service';
 import { PedidosService } from '../pedidos/pedidos.service';
@@ -23,6 +24,7 @@ export class SoporteService {
     private readonly auth: AuthService,
     private readonly rt: RealtimeService,
     private readonly push: PushService,
+    private readonly bitacora: BitacoraCuentasService,
     @InjectRepository(Pedido) private readonly pedidos: Repository<Pedido>,
     @InjectRepository(Usuario) private readonly usuarios: Repository<Usuario>,
     @InjectRepository(Tienda) private readonly tiendas: Repository<Tienda>,
@@ -89,7 +91,9 @@ export class SoporteService {
   async buscarUsuarios(q: BuscarUsuariosDto) {
     const qb = this.usuarios.createQueryBuilder('u').where('TRUE');
     if (q.rol) qb.andWhere('u.rol = :rol', { rol: q.rol });
+    // Las cuentas eliminadas solo aparecen si se piden explícitamente.
     if (q.estado) qb.andWhere('u.estado = :estado', { estado: q.estado });
+    else qb.andWhere(`u.estado <> 'eliminado'`);
     if (q.q?.trim()) {
       qb.andWhere(
         new Brackets((b) =>
@@ -109,11 +113,39 @@ export class SoporteService {
     return u;
   }
 
-  async aprobar(id: string) {
+  /** Ficha completa para soporte: datos de la cuenta, baneo, bloqueo y su tienda si tiene. */
+  async detalle(id: string) {
+    const u = await this.usuario(id);
+    const tiendas = u.rol === 'tienda' ? await this.tiendas.findBy({ ownerId: u.id }) : [];
+    return {
+      ...vistaUsuario(u),
+      motivoBaneo: u.motivoBaneo,
+      bloqueadoHasta: u.bloqueadoHasta && u.bloqueadoHasta > new Date() ? u.bloqueadoHasta : null,
+      eliminadoEn: u.eliminadoEn,
+      terminosVersion: u.terminosVersion,
+      terminosAceptadosEn: u.terminosAceptadosEn,
+      tiendas: tiendas.map((t) => ({ id: t.id, nombre: t.nombre, abierta: t.abierta })),
+    };
+  }
+
+  eventos(id: string) {
+    return this.usuario(id).then((u) => this.bitacora.listar(u.id));
+  }
+
+  async desbloquear(agente: Usuario, id: string) {
+    const u = await this.usuario(id);
+    if (!u.bloqueadoHasta || u.bloqueadoHasta <= new Date()) throw conflicto('TRANSICION_INVALIDA', 'La cuenta no está bloqueada');
+    await this.usuarios.update(u.id, { bloqueadoHasta: null, intentosFallidos: 0 });
+    await this.bitacora.registrar(u.id, 'desbloqueada', agente);
+    return this.detalle(u.id);
+  }
+
+  async aprobar(agente: Usuario, id: string) {
     const u = await this.usuario(id);
     if (u.estado !== 'pendiente_aprobacion') throw conflicto('TRANSICION_INVALIDA', 'La cuenta no está pendiente de aprobación');
     u.estado = 'activo';
     await this.usuarios.save(u);
+    await this.bitacora.registrar(u.id, 'aprobada', agente);
     this.rt.emitir([`usuario:${u.id}`], 'cuenta:aprobada', {});
     void this.push.aUsuarios([u.id], 'Cuenta aprobada', 'Ya puedes usar PaPedir');
     return vistaUsuario(u);
@@ -123,33 +155,38 @@ export class SoporteService {
   async banear(agente: Usuario, id: string, motivo: string) {
     const u = await this.usuario(id);
     if (u.id === agente.id) throw conflicto('TRANSICION_INVALIDA', 'No puedes banearte a ti mismo');
+    if (u.estado === 'eliminado') throw conflicto('TRANSICION_INVALIDA', 'La cuenta ya fue eliminada');
     if ((u.rol === 'soporte' || u.rol === 'admin') && agente.rol !== 'admin') {
       throw conflicto('TRANSICION_INVALIDA', 'Solo un admin puede banear cuentas internas');
     }
     Object.assign(u, { estado: 'baneado', motivoBaneo: motivo, disponible: false });
     await this.usuarios.save(u);
     await this.tiendas.update({ ownerId: u.id }, { abierta: false });
+    await this.bitacora.registrar(u.id, 'baneada', agente, motivo);
     this.rt.emitir([`usuario:${u.id}`], 'cuenta:baneada', { motivo });
     await this.auth.cerrarSesiones(u.id);
     this.rt.desconectar(u.id);
     return vistaUsuario(u);
   }
 
-  async desbanear(id: string) {
+  async desbanear(agente: Usuario, id: string) {
     const u = await this.usuario(id);
     if (u.estado !== 'baneado') throw conflicto('TRANSICION_INVALIDA', 'La cuenta no está baneada');
     Object.assign(u, { estado: 'activo', motivoBaneo: null });
-    return vistaUsuario(await this.usuarios.save(u));
+    const guardado = await this.usuarios.save(u);
+    await this.bitacora.registrar(u.id, 'desbaneada', agente);
+    return vistaUsuario(guardado);
   }
 
   // ─────────────────────────── admin
 
-  async crearInterno(dto: UsuarioInternoDto) {
+  async crearInterno(admin: Usuario, dto: UsuarioInternoDto) {
     const email = dto.email.toLowerCase().trim();
     if (await this.usuarios.existsBy({ email })) throw conflicto('EMAIL_REGISTRADO', 'Ese correo ya está registrado');
     const u = await this.usuarios.save(
       this.usuarios.create({ nombre: dto.nombre.trim(), email, rol: dto.rol, estado: 'activo', passwordHash: await bcrypt.hash(dto.password, 10) }),
     );
+    await this.bitacora.registrar(u.id, 'creada_por_admin', admin, `Rol ${dto.rol}`);
     return vistaUsuario(u);
   }
 

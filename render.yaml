@@ -36,3 +36,9 @@ services:
         sync: false # dominio de Vercel, sin "/" al final
       - key: FIREBASE_SERVICE_ACCOUNT_BASE64
         sync: false # opcional: sin ella no hay push
+      - key: RESEND_API_KEY
+        sync: false # opcional: sin ella los códigos por correo solo van al log
+      - key: CORREO_REMITENTE
+        value: PaPedir <onboarding@resend.dev>
+      - key: LEGAL_URL_BASE
+        value: https://papedir-frontend.vercel.app

@@ -43,7 +43,7 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection {
       const token = socket.handshake.auth?.token ?? String(socket.handshake.headers.authorization ?? '').replace(/^Bearer /, '');
       const { sub } = await this.jwt.verifyAsync(token);
       const u = await this.usuarios.findOneBy({ id: sub });
-      if (!u || u.estado === 'baneado') throw new Error('cuenta inválida');
+      if (!u || u.estado === 'baneado' || u.estado === 'eliminado') throw new Error('cuenta inválida');
 
       socket.data.usuarioId = u.id;
       await socket.join(`usuario:${u.id}`);
@@ -62,7 +62,7 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection {
   /** Carga al usuario en cada evento: así un baneo o cambio de rol aplica de inmediato. */
   private async actor(socket: Socket) {
     const u = socket.data.usuarioId && (await this.usuarios.findOneBy({ id: socket.data.usuarioId }));
-    return u && u.estado !== 'baneado' ? u : null;
+    return u && u.estado !== 'baneado' && u.estado !== 'eliminado' ? u : null;
   }
 
   /** App Repartidor: cada 10 s mientras esté conectado o con viaje activo. */

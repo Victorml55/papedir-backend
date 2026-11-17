@@ -41,7 +41,7 @@ export class AuthGuard implements CanActivate {
       throw new AppError(401, 'NO_AUTENTICADO', 'Token inválido o expirado');
     }
     const usuario = await this.usuarios.findOneBy({ id: payload.sub });
-    if (!usuario) throw new AppError(401, 'NO_AUTENTICADO', 'El usuario ya no existe');
+    if (!usuario || usuario.estado === 'eliminado') throw new AppError(401, 'NO_AUTENTICADO', 'El usuario ya no existe');
     if (usuario.estado === 'baneado') throw sinPermiso('Tu cuenta fue suspendida', 'CUENTA_BANEADA');
 
     const roles = this.reflector.getAllAndOverride<Rol[]>('roles', destinos);
