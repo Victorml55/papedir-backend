@@ -137,6 +137,8 @@ export class Tienda {
   @Column({ default: false }) usarHorario: boolean;
   /** Pausa temporal: no recibe pedidos hasta esta hora. */
   @Column({ ...fecha, nullable: true }) pausadaHasta: Date | null;
+  /** Comisión especial para esta tienda; null = la general de /admin/configuracion. */
+  @Column({ type: 'numeric', precision: 5, scale: 2, nullable: true, transformer: dinero.transformer }) comisionPct: number | null;
   @Column({ type: 'numeric', precision: 3, scale: 2, nullable: true, transformer: dinero.transformer }) calificacion: number | null;
   @CreateDateColumn(fecha) creadoEn: Date;
 }
@@ -240,9 +242,27 @@ export class Pedido {
   @Column({ ...fecha, nullable: true }) listoEn: Date | null;
   @Column({ ...fecha, nullable: true }) entregadoEn: Date | null;
   @Column({ default: false }) soporteAvisado: boolean;
+  @Column({ ...dinero, default: 0 }) propina: number;
+  @Column({ ...dinero, default: 0 }) descuento: number;
+  @Column({ type: 'uuid', nullable: true }) cuponId: string | null;
+  /** Quién paga el descuento del cupón: la tienda (cobra menos) o la plataforma (se lo reembolsa al repartidor). */
+  @Column({ type: 'text', nullable: true }) descuentoAbsorbe: 'plataforma' | 'tienda' | null;
+  /** Lo que el repartidor le paga a la tienda: subtotal menos el descuento si lo absorbe la tienda. */
+  @Column(dinero) montoTienda: number;
+  @Column({ type: 'jsonb', default: () => "'[]'" }) recargos: Recargo[];
+  /** Pedidos de varias tiendas hechos en un mismo carrito. */
+  @Column({ type: 'uuid', nullable: true }) grupoId: string | null;
+  /** Hora de entrega deseada de un pedido programado. */
+  @Column({ ...fecha, nullable: true }) programadoPara: Date | null;
+  @Column({ ...fecha, nullable: true }) enviadoATiendaEn: Date | null;
+  @Column({ type: 'text', nullable: true }) motivoCodigo: string | null;
+  @Column({ ...dinero, nullable: true }) comisionTienda: number | null;
+  @Column({ ...dinero, nullable: true }) comisionEnvio: number | null;
   @CreateDateColumn(fecha) creadoEn: Date;
   @UpdateDateColumn(fecha) actualizadoEn: Date;
 }
+
+export type Recargo = { concepto: string; monto: number };
 
 @Entity('pedido_items')
 export class PedidoItem {
@@ -278,6 +298,105 @@ export class Calificacion {
   @Column('int') tienda: number;
   @Column('int') repartidor: number;
   @Column({ nullable: true }) comentario: string | null;
+  /** Respuesta pública de la tienda a la reseña. */
+  @Column({ type: 'text', nullable: true }) respuesta: string | null;
+  @Column({ ...fecha, nullable: true }) respondidoEn: Date | null;
+  @CreateDateColumn(fecha) creadoEn: Date;
+}
+
+@Entity('favoritos')
+export class Favorito {
+  @PrimaryColumn('uuid') clienteId: string;
+  @PrimaryColumn('uuid') tiendaId: string;
+  @CreateDateColumn(fecha) creadoEn: Date;
+}
+
+@Entity('cupones')
+export class Cupon {
+  @PrimaryGeneratedColumn('uuid') id: string;
+  @Column({ unique: true }) codigo: string;
+  @Column({ type: 'text', nullable: true }) descripcion: string | null;
+  @Column({ type: 'text' }) tipo: 'porcentaje' | 'monto' | 'envio_gratis';
+  @Column(dinero) valor: number;
+  @Column({ ...dinero, nullable: true }) maximoDescuento: number | null;
+  @Column({ ...dinero, default: 0 }) minimoCompra: number;
+  /** null = cupón de la plataforma (válido en todas las tiendas, lo paga PaPedir). */
+  @Column({ type: 'uuid', nullable: true }) tiendaId: string | null;
+  @Column({ ...fecha, nullable: true }) inicio: Date | null;
+  @Column({ ...fecha, nullable: true }) fin: Date | null;
+  @Column({ type: 'int', nullable: true }) usosMaximos: number | null;
+  @Column({ type: 'int', default: 1 }) usosPorCliente: number;
+  @Column({ default: false }) soloPrimerPedido: boolean;
+  @Column({ default: true }) activo: boolean;
+  @Column({ type: 'uuid', nullable: true }) creadoPor: string | null;
+  @CreateDateColumn(fecha) creadoEn: Date;
+}
+
+@Entity('notificaciones')
+export class Notificacion {
+  @PrimaryGeneratedColumn('uuid') id: string;
+  @Column('uuid') usuarioId: string;
+  @Column() titulo: string;
+  @Column() cuerpo: string;
+  @Column({ type: 'jsonb', default: () => "'{}'" }) datos: Record<string, string>;
+  @Column({ ...fecha, nullable: true }) leidaEn: Date | null;
+  @CreateDateColumn(fecha) creadoEn: Date;
+}
+
+/** Chat entre el cliente y el repartidor de un pedido en curso. */
+@Entity('mensajes_pedido')
+export class MensajePedido {
+  @PrimaryGeneratedColumn('uuid') id: string;
+  @Column('uuid') pedidoId: string;
+  @Column('uuid') autorId: string;
+  @Column({ type: 'text' }) autorRol: Rol;
+  @Column() texto: string;
+  @CreateDateColumn(fecha) creadoEn: Date;
+}
+
+/** Zona de cobertura. El polígono (geography) se lee y escribe con SQL; aquí no se mapea. */
+@Entity('zonas')
+export class Zona {
+  @PrimaryGeneratedColumn('uuid') id: string;
+  @Column() nombre: string;
+  @Column({ default: true }) activa: boolean;
+  @Column({ ...dinero, default: 0 }) recargo: number;
+  @CreateDateColumn(fecha) creadoEn: Date;
+}
+
+@Entity('configuracion')
+export class Configuracion {
+  @PrimaryColumn() clave: string;
+  @Column({ type: 'jsonb' }) valor: any;
+  @Column({ type: 'uuid', nullable: true }) actualizadoPor: string | null;
+  @UpdateDateColumn(fecha) actualizadoEn: Date;
+}
+
+@Entity('liquidaciones')
+export class Liquidacion {
+  @PrimaryGeneratedColumn('uuid') id: string;
+  @Column('uuid') usuarioId: string;
+  /** cobro = PaPedir recibe dinero del usuario; pago = PaPedir le paga. */
+  @Column({ type: 'text' }) sentido: 'cobro' | 'pago';
+  @Column(dinero) monto: number;
+  @Column({ type: 'text' }) metodo: 'efectivo' | 'transferencia';
+  @Column({ type: 'text', nullable: true }) referencia: string | null;
+  @Column({ type: 'text', nullable: true }) nota: string | null;
+  @Column('uuid') registradoPor: string;
+  @CreateDateColumn(fecha) creadoEn: Date;
+}
+
+/** Cuenta corriente con PaPedir. monto > 0 = el usuario le debe a la plataforma; < 0 = la plataforma le debe. */
+@Entity('movimientos')
+export class Movimiento {
+  @PrimaryGeneratedColumn('uuid') id: string;
+  @Column('uuid') usuarioId: string;
+  @Column({ type: 'uuid', nullable: true }) tiendaId: string | null;
+  @Column({ type: 'uuid', nullable: true }) pedidoId: string | null;
+  @Column({ type: 'uuid', nullable: true }) liquidacionId: string | null;
+  @Column({ type: 'text' }) tipo: 'comision_tienda' | 'comision_envio' | 'descuento_plataforma' | 'liquidacion';
+  @Column(dinero) monto: number;
+  @Column() descripcion: string;
   @CreateDateColumn(fecha) creadoEn: Date;
 }
 
@@ -308,5 +427,6 @@ export class Mensaje {
 
 export const ENTIDADES = [
   Usuario, CodigoVerificacion, EventoCuenta, RefreshToken, Dispositivo, Direccion, Tienda, CategoriaProducto, Producto, Viaje, Pedido, PedidoItem,
-  EventoPedido, Calificacion, Ticket, Mensaje, Vehiculo, Documento, HorarioTienda, GrupoOpciones, Opcion,
+  EventoPedido, Calificacion, Ticket, Mensaje, Vehiculo, Documento, HorarioTienda, GrupoOpciones, Opcion, Favorito, Cupon,
+  Notificacion, MensajePedido, Zona, Configuracion, Liquidacion, Movimiento,
 ];

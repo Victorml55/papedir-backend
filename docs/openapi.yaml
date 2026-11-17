@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: PaPedir API
-  version: 1.2.0
+  version: 1.3.0
   description: |
     Contrato de la API de PaPedir, plataforma de reparto a domicilio en Celaya, Gto.
 
@@ -44,6 +44,12 @@ tags:
     description: Web (rol soporte y admin)
   - name: Admin
     description: Web (rol admin)
+  - name: Cliente
+    description: Favoritos, búsqueda, notificaciones y catálogos
+  - name: Finanzas
+    description: Comisiones, saldos con PaPedir y liquidaciones
+  - name: Configuración
+    description: Zonas de cobertura, tarifas dinámicas, comisiones y cupones (admin)
   - name: Archivos
     description: Subida de imágenes (productos, tiendas, perfil, evidencia de entrega)
   - name: Documentos
@@ -548,6 +554,47 @@ paths:
                         items: { $ref: '#/components/schemas/Turno' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /tiendas/{id}/resenas:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: resenasTienda
+      tags: [Tiendas]
+      summary: Reseñas de una tienda, de la más nueva a la más vieja
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: 
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        pedidoId: { type: string, format: uuid }
+                        calificacion: { type: integer, minimum: 1, maximum: 5 }
+                        comentario: { type: string, nullable: true }
+                        cliente: { type: string, example: Ana L., description: Nombre e inicial del apellido }
+                        respuesta: { type: string, nullable: true, description: Respuesta de la tienda }
+                        respondidoEn: { type: string, format: date-time, nullable: true }
+                        creadoEn: { type: string, format: date-time }
+                  meta: { $ref: '#/components/schemas/PaginaMeta' }
+                  resumen:
+                    type: object
+                    properties:
+                      promedio: { type: number, nullable: true }
+                      total: { type: integer }
+                      porEstrellas:
+                        type: object
+                        additionalProperties: { type: integer }
+                        example: { '5': 12, '4': 3, '3': 1, '2': 0, '1': 0 }
+
   /tiendas/{id}/menu:
     parameters:
       - $ref: '#/components/parameters/Id'
@@ -737,6 +784,65 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ReporteVentas' }
         '400': { $ref: '#/components/responses/ValidationError' }
+
+  /tiendas/mia/cupones:
+    parameters:
+      - $ref: '#/components/parameters/TiendaSel'
+    get:
+      operationId: misCupones
+      tags: [Tiendas]
+      summary: Cupones de mi sucursal (rol tienda)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: 
+                type: array
+                items: { $ref: '#/components/schemas/Cupon' }
+    post:
+      operationId: crearMiCupon
+      tags: [Tiendas]
+      summary: Crear un cupón de mi sucursal (rol tienda)
+      description: El descuento lo absorbe la tienda (el repartidor le paga menos). La tienda no puede dar envío gratis.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CuponInput' }
+      responses:
+        '201':
+          description: Creado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Cupon' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409':
+          description: Código repetido (`CUPON_DUPLICADO`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /tiendas/mia/cupones/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+      - $ref: '#/components/parameters/TiendaSel'
+    patch:
+      operationId: actualizarMiCupon
+      tags: [Tiendas]
+      summary: Activar/desactivar o cambiar vigencia de un cupón (rol tienda)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CuponUpdate' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Cupon' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /tiendas/mia/productos:
     parameters:
@@ -953,6 +1059,39 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
 
+  /pedidos/grupo:
+    post:
+      operationId: crearGrupoPedidos
+      tags: [Pedidos]
+      summary: Carrito con productos de 2 o 3 tiendas (rol cliente)
+      description: |
+        Crea un pedido por tienda, cada uno con su envío, su repartidor y su código de entrega, unidos por `grupoId`.
+        Se validan todos antes de crear: si uno falla, no se crea ninguno. Cupón y propina van por tienda.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GrupoPedidosRequest' }
+      responses:
+        '201':
+          description: Creados
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  grupoId: { type: string, format: uuid }
+                  total: { type: number, description: Suma de los totales }
+                  pedidos:
+                    type: array
+                    items: { $ref: '#/components/schemas/Pedido' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409':
+          description: Alguna tienda cerrada, producto agotado, cupón inválido...
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /pedidos/cotizar:
     post:
       operationId: cotizarPedido
@@ -1087,7 +1226,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/MotivoRequest' }
+            schema: { $ref: '#/components/schemas/MotivoCancelacionRequest' }
       responses:
         '200':
           description: OK
@@ -1120,14 +1259,15 @@ paths:
       tags: [Pedidos]
       summary: Cancelar pedido
       description: |
-        - cliente: solo en estado `creado`
+        - cliente: en `programado` o `creado`
         - tienda: antes de `asignado`
+        Manda un `codigo` de GET /catalogos/motivos-cancelacion, un `motivo` libre, o ambos.
         Después de eso solo soporte puede cancelar (/soporte/pedidos/{id}/cancelar).
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/MotivoRequest' }
+            schema: { $ref: '#/components/schemas/MotivoCancelacionRequest' }
       responses:
         '200':
           description: OK
@@ -1135,6 +1275,122 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Pedido' }
         '409': { $ref: '#/components/responses/TransicionInvalida' }
+
+  /pedidos/{id}/repetir:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: repetirPedido
+      tags: [Pedidos]
+      summary: Armar el carrito de un pedido anterior (rol cliente)
+      description: |
+        Usa el menú de hoy: precios actuales y las mismas opciones (por nombre). Lo que ya no se puede pedir va en
+        `omitidos`. No crea el pedido: la app muestra el carrito y luego cotiza y crea normalmente.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: 
+                type: object
+                properties:
+                  tienda:
+                    type: object
+                    properties:
+                      id: { type: string, format: uuid }
+                      nombre: { type: string }
+                      abiertaAhora: { type: boolean }
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        productoId: { type: string, format: uuid }
+                        nombre: { type: string }
+                        cantidad: { type: integer }
+                        opciones: { type: array, items: { type: string, format: uuid } }
+                        precioUnitario: { type: number }
+                  omitidos:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        nombre: { type: string }
+                        motivo: { type: string, example: Agotado }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /pedidos/{id}/calificacion/respuesta:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: responderResena
+      tags: [Pedidos]
+      summary: La tienda responde públicamente la reseña de un pedido (rol tienda)
+      description: Se puede editar mandándola otra vez. El cliente recibe una notificación.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: 
+              type: object
+              required: [texto]
+              properties:
+                texto: { type: string, maxLength: 500 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: 
+                type: object
+                properties:
+                  pedidoId: { type: string, format: uuid }
+                  respuesta: { type: string }
+                  respondidoEn: { type: string, format: date-time }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /pedidos/{id}/mensajes:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: mensajesPedido
+      tags: [Pedidos]
+      summary: Chat del pedido entre cliente y repartidor (últimos 200, del más viejo al más nuevo)
+      description: Lo ven el cliente, el repartidor asignado y soporte. Evento en tiempo real `pedido:mensaje`.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: 
+                type: array
+                items: { $ref: '#/components/schemas/MensajePedido' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: enviarMensajePedido
+      tags: [Pedidos]
+      summary: Escribir en el chat del pedido
+      description: Solo mientras el repartidor lleva el pedido (asignado → en_domicilio); si no, 409 `CHAT_CERRADO`. Soporte puede escribir siempre.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: 
+              type: object
+              required: [texto]
+              properties:
+                texto: { type: string, maxLength: 500 }
+      responses:
+        '201':
+          description: Enviado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MensajePedido' }
+        '409':
+          description: Chat cerrado o pedido manual
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /pedidos/{id}/calificar:
     parameters:
@@ -1476,6 +1732,178 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
 
+  /favoritos:
+    get:
+      operationId: misFavoritos
+      tags: [Cliente]
+      summary: Mis tiendas favoritas (rol cliente)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: 
+                type: array
+                items: { $ref: '#/components/schemas/Tienda' }
+
+  /favoritos/{tiendaId}:
+    parameters:
+      - name: tiendaId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    put:
+      operationId: agregarFavorito
+      tags: [Cliente]
+      summary: Marcar tienda como favorita
+      responses:
+        '204': { description: Agregada }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: quitarFavorito
+      tags: [Cliente]
+      summary: Quitar de favoritas
+      responses:
+        '204': { description: Quitada }
+
+  /productos/buscar:
+    get:
+      operationId: buscarProductos
+      tags: [Cliente]
+      summary: Buscar productos en las tiendas que reciben pedidos ahora
+      description: Por nombre o descripción. Con lat/lng solo dentro del radio y de la tienda más cercana a la más lejana.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, minLength: 2, example: pastor }
+        - $ref: '#/components/parameters/Lat'
+        - $ref: '#/components/parameters/Lng'
+        - name: radioKm
+          in: query
+          schema: { type: number, default: 8 }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: 
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        producto: { $ref: '#/components/schemas/Producto' }
+                        tienda:
+                          type: object
+                          properties:
+                            id: { type: string, format: uuid }
+                            nombre: { type: string }
+                            imagenUrl: { type: string, nullable: true }
+                            distanciaKm: { type: number, nullable: true }
+                  meta: { $ref: '#/components/schemas/PaginaMeta' }
+
+  /notificaciones:
+    get:
+      operationId: misNotificaciones
+      tags: [Cliente]
+      summary: Bandeja de notificaciones (todos los roles)
+      description: |
+        Todo lo que llega por push también se guarda aquí (60 días). En tiempo real llega el evento `notificacion:nueva`.
+      parameters:
+        - name: soloNoLeidas
+          in: query
+          schema: { type: boolean }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: 
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Notificacion' }
+                  meta: { $ref: '#/components/schemas/PaginaMeta' }
+                  noLeidas: { type: integer, description: Para el globito de la campana }
+
+  /notificaciones/leer-todas:
+    post:
+      operationId: leerTodasNotificaciones
+      tags: [Cliente]
+      summary: Marcar todas como leídas
+      responses:
+        '204': { description: Listo }
+
+  /notificaciones/{id}/leer:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: leerNotificacion
+      tags: [Cliente]
+      summary: Marcar una como leída
+      responses:
+        '204': { description: Listo }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /catalogos/motivos-cancelacion:
+    get:
+      operationId: motivosCancelacion
+      tags: [Cliente]
+      summary: Motivos para cancelar o rechazar, por rol
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: 
+                type: object
+                properties:
+                  cliente: { type: array, items: { $ref: '#/components/schemas/Motivo' } }
+                  tienda: { type: array, items: { $ref: '#/components/schemas/Motivo' } }
+                  soporte: { type: array, items: { $ref: '#/components/schemas/Motivo' } }
+
+  /zonas:
+    get:
+      operationId: zonasActivas
+      tags: [Cliente]
+      summary: Zonas de cobertura activas (para dibujarlas en el mapa)
+      description: Sin zonas activas se atiende cualquier destino a 8 km o menos de la tienda.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: 
+                type: array
+                items: { $ref: '#/components/schemas/Zona' }
+
+  /saldo:
+    get:
+      operationId: miSaldo
+      tags: [Finanzas]
+      summary: Mi saldo con PaPedir y sus movimientos (tienda y repartidor)
+      description: |
+        Saldo > 0: debes a PaPedir (comisiones). Saldo < 0: PaPedir te debe (cupones de PaPedir que cobraste de menos).
+        Se salda con una liquidación que registra admin.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EstadoDeCuenta' }
+
   /uploads:
     post:
       operationId: subirImagen
@@ -1654,7 +2082,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/MotivoRequest' }
+            schema: { $ref: '#/components/schemas/MotivoCancelacionRequest' }
       responses:
         '200':
           description: OK
@@ -1972,6 +2400,317 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Usuario' }
 
+  /admin/cancelaciones:
+    get:
+      operationId: metricasCancelaciones
+      tags: [Admin]
+      summary: Motivos de cancelación y rechazo (soporte y admin)
+      parameters:
+        - $ref: '#/components/parameters/Desde'
+        - $ref: '#/components/parameters/Hasta'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: 
+                type: object
+                properties:
+                  desde: { type: string, format: date }
+                  hasta: { type: string, format: date }
+                  motivos:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        codigo: { type: string }
+                        texto: { type: string }
+                        cancelados: { type: integer }
+                        rechazados: { type: integer }
+
+  /admin/zonas:
+    get:
+      operationId: listarZonas
+      tags: [Configuración]
+      summary: Todas las zonas de cobertura
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: 
+                type: array
+                items: { $ref: '#/components/schemas/Zona' }
+    post:
+      operationId: crearZona
+      tags: [Configuración]
+      summary: Crear zona de cobertura
+      description: |
+        En cuanto hay al menos una zona activa, solo se entrega en destinos dentro de alguna (`FUERA_DE_COBERTURA`).
+        `recargo` se suma al envío de los destinos de esa zona.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ZonaInput' }
+      responses:
+        '201':
+          description: Creada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Zona' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /admin/zonas/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    patch:
+      operationId: actualizarZona
+      tags: [Configuración]
+      summary: Cambiar nombre, recargo, polígono o activarla/desactivarla
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ZonaInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Zona' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: eliminarZona
+      tags: [Configuración]
+      summary: Eliminar zona
+      responses:
+        '204': { description: Eliminada }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/configuracion:
+    get:
+      operationId: obtenerConfiguracion
+      tags: [Configuración]
+      summary: Comisiones y tarifas dinámicas vigentes
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Configuracion' }
+
+  /admin/configuracion/comisiones:
+    put:
+      operationId: guardarComisiones
+      tags: [Configuración]
+      summary: Comisión general de PaPedir
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Comisiones' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Comisiones' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /admin/configuracion/recargos:
+    put:
+      operationId: guardarRecargos
+      tags: [Configuración]
+      summary: Tarifas dinámicas (se suman al envío y son para el repartidor)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Recargos' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Recargos' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /admin/tiendas/{id}/comision:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    put:
+      operationId: comisionTienda
+      tags: [Configuración]
+      summary: Comisión especial para una tienda (null = la general)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: 
+              type: object
+              properties:
+                comisionPct: { type: number, nullable: true, minimum: 0, maximum: 50 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: 
+                type: object
+                properties:
+                  tiendaId: { type: string, format: uuid }
+                  comisionPct: { type: number, nullable: true }
+                  general: { type: number }
+
+  /admin/cupones:
+    get:
+      operationId: listarCupones
+      tags: [Configuración]
+      summary: Todos los cupones
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: 
+                type: array
+                items: { $ref: '#/components/schemas/Cupon' }
+    post:
+      operationId: crearCupon
+      tags: [Configuración]
+      summary: Crear cupón de PaPedir (o de una tienda con `tiendaId`)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CuponInput' }
+      responses:
+        '201':
+          description: Creado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Cupon' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409':
+          description: Código repetido (`CUPON_DUPLICADO`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /admin/cupones/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    patch:
+      operationId: actualizarCupon
+      tags: [Configuración]
+      summary: Activar/desactivar o cambiar vigencia
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CuponUpdate' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Cupon' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/saldos:
+    get:
+      operationId: listarSaldos
+      tags: [Finanzas]
+      summary: Quién le debe a PaPedir y a quién le debe PaPedir
+      parameters:
+        - name: rol
+          in: query
+          schema: { type: string, enum: [tienda, repartidor] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: 
+                type: object
+                properties:
+                  totalPorCobrar: { type: number }
+                  totalPorPagar: { type: number }
+                  usuarios:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string, format: uuid }
+                        nombre: { type: string }
+                        rol: { $ref: '#/components/schemas/Rol' }
+                        saldo: { type: number }
+                        ultimoMovimiento: { type: string, format: date-time }
+
+  /admin/usuarios/{id}/saldo:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: saldoDeUsuario
+      tags: [Finanzas]
+      summary: Estado de cuenta de una tienda o repartidor
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EstadoDeCuenta' }
+
+  /admin/liquidaciones:
+    get:
+      operationId: listarLiquidaciones
+      tags: [Finanzas]
+      summary: Pagos registrados
+      parameters:
+        - name: usuarioId
+          in: query
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: 
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Liquidacion' }
+                  meta: { $ref: '#/components/schemas/PaginaMeta' }
+    post:
+      operationId: registrarLiquidacion
+      tags: [Finanzas]
+      summary: Registrar un pago entre PaPedir y una tienda o repartidor
+      description: "`cobro`: el usuario le paga a PaPedir (baja su saldo). `pago`: PaPedir le paga al usuario (sube su saldo)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LiquidacionInput' }
+      responses:
+        '201':
+          description: Registrada
+          content:
+            application/json:
+              schema: 
+                allOf:
+                  - $ref: '#/components/schemas/Liquidacion'
+                  - type: object
+                    properties:
+                      saldo: { type: number, description: Saldo después del pago }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
   /admin/metricas:
     get:
       operationId: obtenerAdminMetricas
@@ -2100,7 +2839,8 @@ components:
             VIAJE_LLENO, NO_ENCADENABLE, VIAJE_ACTIVO, CODIGO_INCORRECTO, TICKET_DUPLICADO, CALIFICACION_INVALIDA,
             REPARTIDOR_DESCONECTADO, CATEGORIA_CON_PRODUCTOS, TICKET_CERRADO, DEMASIADAS_PETICIONES, ERROR_INTERNO,
             CUENTA_BLOQUEADA, CODIGO_INVALIDO, PASSWORD_INCORRECTA, CORREO_YA_VERIFICADO, VERSION_TERMINOS,
-            TIENE_PEDIDOS_ACTIVOS, ULTIMO_ADMIN, LIMITE_SUCURSALES, DOCUMENTO_APROBADO, DOCUMENTOS_INCOMPLETOS
+            TIENE_PEDIDOS_ACTIVOS, ULTIMO_ADMIN, LIMITE_SUCURSALES, DOCUMENTO_APROBADO, DOCUMENTOS_INCOMPLETOS,
+            CUPON_INVALIDO, CUPON_DUPLICADO, CHAT_CERRADO
           example: PEDIDO_YA_TOMADO
         message: { type: string, example: El pedido ya fue tomado por otro repartidor }
         detalles:
@@ -2431,7 +3171,10 @@ components:
             cancelados: { type: integer }
             rechazados: { type: integer }
             enCurso: { type: integer }
-            ventas: { type: number, example: 4250.5 }
+            ventas: { type: number, example: 4250.5, description: Lo que cobró al repartidor (productos menos sus cupones) }
+            descuentosCupones: { type: number, description: Cupones de la tienda }
+            comisionPlataforma: { type: number }
+            ventasNetas: { type: number, description: ventas − comisión }
             ticketPromedio: { type: number, example: 152.3 }
             calificacionPromedio: { type: number, nullable: true }
             calificaciones: { type: integer }
@@ -2562,10 +3305,12 @@ components:
     EstadoPedido:
       type: string
       description: |
-        creado → aceptado_tienda → listo_para_recoger → asignado → en_tienda
+        (programado →) creado → aceptado_tienda → listo_para_recoger → asignado → en_tienda
         → en_camino → en_domicilio → entregado.
         Finales: entregado, cancelado, rechazado.
+        `programado`: pedido para más tarde; llega a la tienda (pasa a `creado`) con la anticipación necesaria.
       enum:
+        - programado
         - creado
         - aceptado_tienda
         - listo_para_recoger
@@ -2583,6 +3328,12 @@ components:
       properties:
         tiendaId: { type: string, format: uuid }
         direccionId: { type: string, format: uuid }
+        cupon: { type: string, example: BIENVENIDA, description: Código de cupón (mayúsculas o minúsculas) }
+        propina: { type: number, minimum: 0, maximum: 500, example: 20, description: Para el repartidor; se cobra en efectivo con el total }
+        programadoPara:
+          type: string
+          format: date-time
+          description: Pedido programado. Hora de entrega deseada, de 45 minutos a 7 días a partir de ahora
         items:
           type: array
           minItems: 1
@@ -2602,14 +3353,27 @@ components:
     Cotizacion:
       type: object
       description: |
-        Envío = $25 hasta 2 km + $7 por km adicional o fracción.
-        Distancia = línea recta tienda → destino × 1.3. Cobertura máxima 8 km.
+        Envío = $25 hasta 2 km + $7 por km adicional o fracción, más recargos (zona, horario nocturno, lluvia, alta demanda).
+        Distancia = línea recta tienda → destino × 1.3. Cobertura máxima 8 km y, si hay zonas activas, dentro de una zona.
+        Un cupón inválido responde 409 `CUPON_INVALIDO` con el motivo en `message`.
       properties:
         distanciaKm: { type: number, example: 4.42 }
         subtotal: { type: number, example: 170.0 }
-        costoEnvio: { type: number, example: 46.0 }
-        total: { type: number, example: 216.0 }
+        costoEnvio: { type: number, example: 46.0, description: Incluye los recargos }
+        recargos:
+          type: array
+          items: { $ref: '#/components/schemas/Recargo' }
+        descuento: { type: number, example: 30.0 }
+        cupon:
+          type: object
+          nullable: true
+          properties:
+            codigo: { type: string }
+            descripcion: { type: string, nullable: true }
+        propina: { type: number, example: 20.0 }
+        total: { type: number, example: 206.0, description: subtotal + costoEnvio + propina − descuento }
         metodoPago: { $ref: '#/components/schemas/MetodoPago' }
+        programadoPara: { type: string, format: date-time, nullable: true }
         tiempoEstimadoMin:
           type: integer
           description: Preparación de la tienda + traslado estimado
@@ -2623,6 +3387,12 @@ components:
         direccionId: { type: string, format: uuid }
         metodoPago: { $ref: '#/components/schemas/MetodoPago' }
         notas: { type: string, nullable: true, example: Sin cebolla }
+        cupon: { type: string, example: BIENVENIDA, description: Código de cupón (mayúsculas o minúsculas) }
+        propina: { type: number, minimum: 0, maximum: 500, example: 20, description: Para el repartidor; se cobra en efectivo con el total }
+        programadoPara:
+          type: string
+          format: date-time
+          description: Pedido programado. Hora de entrega deseada, de 45 minutos a 7 días a partir de ahora
         items:
           type: array
           minItems: 1
@@ -2733,13 +3503,25 @@ components:
           description: Productos (o montoACobrar en pedidos manuales)
           example: 170.0
         costoEnvio: { type: number, example: 46.0 }
+        recargos:
+          type: array
+          items: { $ref: '#/components/schemas/Recargo' }
+        propina: { type: number, example: 0 }
+        descuento: { type: number, example: 0 }
         total: { type: number, example: 216.0 }
         distanciaKm: { type: number, example: 4.42 }
         metodoPago: { $ref: '#/components/schemas/MetodoPago' }
         montoAPagarTienda:
           type: number
-          description: Efectivo que el repartidor entrega a la tienda al recoger (= subtotal)
+          description: Efectivo que el repartidor entrega a la tienda al recoger (subtotal menos el cupón si lo da la tienda)
           example: 170.0
+        comisionTienda:
+          type: number
+          nullable: true
+          description: Comisión de PaPedir (al entregarse). Solo la ven la tienda, soporte y admin
+        grupoId: { type: string, format: uuid, nullable: true, description: Pedidos del mismo carrito de varias tiendas }
+        programadoPara: { type: string, format: date-time, nullable: true }
+        motivoCancelacion: { type: string, nullable: true, description: Código del catálogo si se canceló o rechazó }
         codigoEntrega:
           type: string
           nullable: true
@@ -2770,6 +3552,7 @@ components:
           type: string
           enum:
             - creado
+            - enviado_a_tienda
             - aceptado_tienda
             - rechazado
             - listo_para_recoger
@@ -2808,6 +3591,7 @@ components:
           type: number
           description: Ganancia del repartidor por este pedido
           example: 46.0
+        propina: { type: number, example: 0 }
         montoAPagarTienda: { type: number, example: 170.0 }
         totalACobrar:
           type: number
@@ -2825,6 +3609,7 @@ components:
         efectivoAPagarTiendas: { type: number, example: 340.0 }
         efectivoACobrar: { type: number, example: 432.0 }
         gananciaEnvio: { type: number, example: 92.0 }
+        propinas: { type: number, example: 20.0 }
         paradas:
           type: array
           description: Orden sugerido de visita (tiendas y domicilios)
@@ -2869,7 +3654,11 @@ components:
           properties:
             pedidos: { type: integer }
             viajes: { type: integer }
-            gananciaEnvio: { type: number, example: 412.0, description: Lo que gana el repartidor }
+            gananciaEnvio: { type: number, example: 412.0, description: Envíos (con recargos) }
+            propinas: { type: number, example: 60.0 }
+            comisionPlataforma: { type: number, example: 41.2, description: Comisión de PaPedir sobre los envíos }
+            reembolsoCupones: { type: number, example: 30.0, description: Cupones de PaPedir que se le abonan }
+            gananciaNeta: { type: number, example: 460.8, description: envío + propinas − comisión + reembolsos }
             efectivoCobrado: { type: number, example: 2380.0, description: Total cobrado a clientes }
             pagadoATiendas: { type: number, example: 1968.0, description: Productos pagados a las tiendas }
             kmRecorridos: { type: number, description: Distancia tienda → cliente de los pedidos (aproximada) }
@@ -2884,6 +3673,10 @@ components:
               pedidos: { type: integer }
               viajes: { type: integer }
               gananciaEnvio: { type: number }
+              propinas: { type: number }
+              comisionPlataforma: { type: number }
+              reembolsoCupones: { type: number }
+              gananciaNeta: { type: number }
               efectivoCobrado: { type: number }
               pagadoATiendas: { type: number }
               kmRecorridos: { type: number }
@@ -2905,6 +3698,216 @@ components:
         motivo: { type: string, nullable: true, description: Por qué se rechazó }
         creadoEn: { type: string, format: date-time }
         revisadoEn: { type: string, format: date-time, nullable: true }
+
+    MotivoCancelacionRequest:
+      type: object
+      description: Al menos uno de los dos. Si solo va `codigo`, el texto del catálogo queda como motivo.
+      properties:
+        codigo: { type: string, example: cambio_de_opinion }
+        motivo: { type: string, maxLength: 500 }
+
+    Motivo:
+      type: object
+      properties:
+        codigo: { type: string, example: tarda_demasiado }
+        texto: { type: string, example: Tarda demasiado }
+
+    Recargo:
+      type: object
+      properties:
+        concepto: { type: string, example: Lluvia }
+        monto: { type: number, example: 15 }
+
+    GrupoPedidosRequest:
+      type: object
+      required: [direccionId, pedidos]
+      properties:
+        direccionId: { type: string, format: uuid }
+        programadoPara: { type: string, format: date-time }
+        notas: { type: string }
+        pedidos:
+          type: array
+          minItems: 2
+          maxItems: 3
+          items:
+            type: object
+            required: [tiendaId, items]
+            properties:
+              tiendaId: { type: string, format: uuid }
+              items: { $ref: '#/components/schemas/CotizarPedidoRequest/properties/items' }
+              cupon: { type: string }
+              propina: { type: number, minimum: 0, maximum: 500 }
+
+    MensajePedido:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        pedidoId: { type: string, format: uuid }
+        autorId: { type: string, format: uuid }
+        autorRol: { $ref: '#/components/schemas/Rol' }
+        texto: { type: string }
+        creadoEn: { type: string, format: date-time }
+
+    Notificacion:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        titulo: { type: string, example: Pedido R-000123 }
+        cuerpo: { type: string, example: Tu pedido va en camino }
+        datos: { type: object, additionalProperties: { type: string }, example: { pedidoId: 9b1c... } }
+        leida: { type: boolean }
+        creadoEn: { type: string, format: date-time }
+
+    ZonaInput:
+      type: object
+      required: [nombre, puntos]
+      properties:
+        nombre: { type: string, example: Celaya centro }
+        activa: { type: boolean, default: true }
+        recargo: { type: number, minimum: 0, default: 0 }
+        puntos:
+          type: array
+          minItems: 3
+          description: Vértices del polígono en orden, sin repetir el primero al final
+          items: { $ref: '#/components/schemas/Coordenadas' }
+
+    Zona:
+      allOf:
+        - type: object
+          properties:
+            id: { type: string, format: uuid }
+            creadoEn: { type: string, format: date-time }
+        - $ref: '#/components/schemas/ZonaInput'
+
+    Comisiones:
+      type: object
+      required: [tiendaPct, envioPct]
+      properties:
+        tiendaPct: { type: number, minimum: 0, maximum: 50, example: 10, description: '% sobre lo que la tienda cobra por productos' }
+        envioPct: { type: number, minimum: 0, maximum: 50, example: 10, description: '% sobre el envío' }
+
+    Recargos:
+      type: object
+      required: [nocturno, lluvia, demanda]
+      properties:
+        nocturno:
+          type: object
+          properties:
+            activo: { type: boolean }
+            desde: { type: string, example: '22:00' }
+            hasta: { type: string, example: '06:00' }
+            monto: { type: number, example: 10 }
+        lluvia:
+          type: object
+          description: Se activa a mano cuando llueve
+          properties:
+            activo: { type: boolean }
+            monto: { type: number, example: 15 }
+        demanda:
+          type: object
+          description: Aplica cuando hay al menos `pedidosEsperando` pedidos listos con más de 5 min sin repartidor
+          properties:
+            activo: { type: boolean }
+            pedidosEsperando: { type: integer, example: 5 }
+            monto: { type: number, example: 10 }
+
+    Configuracion:
+      type: object
+      properties:
+        comisiones: { $ref: '#/components/schemas/Comisiones' }
+        recargos: { $ref: '#/components/schemas/Recargos' }
+
+    CuponInput:
+      type: object
+      required: [codigo, tipo]
+      properties:
+        codigo: { type: string, pattern: '^[A-Za-z0-9]{4,20}$', example: BIENVENIDA }
+        descripcion: { type: string }
+        tipo:
+          type: string
+          enum: [porcentaje, monto, envio_gratis]
+        valor: { type: number, description: '% (porcentaje) o pesos (monto); no aplica a envío gratis' }
+        maximoDescuento: { type: number, nullable: true }
+        minimoCompra: { type: number, default: 0 }
+        tiendaId: { type: string, format: uuid, nullable: true, description: 'Solo admin. Sin tienda, lo paga PaPedir' }
+        inicio: { type: string, format: date-time, nullable: true }
+        fin: { type: string, format: date-time, nullable: true }
+        usosMaximos: { type: integer, nullable: true, description: En total; null = sin límite }
+        usosPorCliente: { type: integer, default: 1 }
+        soloPrimerPedido: { type: boolean, default: false }
+        activo: { type: boolean, default: true }
+
+    CuponUpdate:
+      type: object
+      properties:
+        descripcion: { type: string }
+        fin: { type: string, format: date-time, nullable: true }
+        usosMaximos: { type: integer, nullable: true }
+        activo: { type: boolean }
+
+    Cupon:
+      allOf:
+        - type: object
+          properties:
+            id: { type: string, format: uuid }
+            usos: { type: integer, description: Pedidos que lo usaron (sin contar cancelados) }
+            creadoEn: { type: string, format: date-time }
+        - $ref: '#/components/schemas/CuponInput'
+
+    Movimiento:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        tipo:
+          type: string
+          enum: [comision_tienda, comision_envio, descuento_plataforma, liquidacion]
+        monto: { type: number, description: '> 0 aumenta lo que debes a PaPedir; < 0 lo disminuye' }
+        descripcion: { type: string, example: Comisión 10% del pedido R-000123 }
+        pedidoId: { type: string, format: uuid, nullable: true }
+        tiendaId: { type: string, format: uuid, nullable: true }
+        liquidacionId: { type: string, format: uuid, nullable: true }
+        creadoEn: { type: string, format: date-time }
+
+    EstadoDeCuenta:
+      type: object
+      properties:
+        saldo: { type: number, example: 152.3 }
+        aFavorDe:
+          type: string
+          nullable: true
+          enum: [plataforma, usuario, null]
+          description: plataforma = debes a PaPedir; usuario = PaPedir te debe
+        movimientos:
+          type: object
+          properties:
+            data:
+              type: array
+              items: { $ref: '#/components/schemas/Movimiento' }
+            meta: { $ref: '#/components/schemas/PaginaMeta' }
+
+    LiquidacionInput:
+      type: object
+      required: [usuarioId, sentido, monto, metodo]
+      properties:
+        usuarioId: { type: string, format: uuid }
+        sentido:
+          type: string
+          enum: [cobro, pago]
+        monto: { type: number, minimum: 0.01 }
+        metodo:
+          type: string
+          enum: [efectivo, transferencia]
+        referencia: { type: string }
+        nota: { type: string }
+
+    Liquidacion:
+      allOf:
+        - type: object
+          properties:
+            id: { type: string, format: uuid }
+            registradoPor: { type: string, format: uuid }
+            creadoEn: { type: string, format: date-time }
+        - $ref: '#/components/schemas/LiquidacionInput'
 
     # ── Tickets ──
     EstadoTicket:

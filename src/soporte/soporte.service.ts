@@ -11,10 +11,11 @@ import { DocumentosService } from '../documentos/documentos';
 import { BitacoraCuentasService } from '../nucleo/bitacora-cuentas.service';
 import { PushService } from '../nucleo/push.service';
 import { RealtimeService } from '../nucleo/realtime.service';
+import { MotivoCancelacionDto } from '../pedidos/pedidos.dto';
 import { PedidosService, vistaVehiculo } from '../pedidos/pedidos.service';
 import { BuscarPedidosDto, BuscarUsuariosDto, CorregirUbicacionDto, MetricasDto, UsuarioInternoDto } from './soporte.dto';
 
-const NO_FINALES: EstadoPedido[] = ['creado', 'aceptado_tienda', 'listo_para_recoger', 'asignado', 'en_tienda', 'en_camino', 'en_domicilio'];
+const NO_FINALES: EstadoPedido[] = ['programado', 'creado', 'aceptado_tienda', 'listo_para_recoger', 'asignado', 'en_tienda', 'en_camino', 'en_domicilio'];
 
 /** Acciones de soporte. Todas exigen un motivo y quedan en la bitácora del pedido. */
 @Injectable()
@@ -52,8 +53,11 @@ export class SoporteService {
     return pagina(await this.pedidosSvc.vistas(filas, agente), total, q);
   }
 
-  async cancelar(agente: Usuario, id: string, motivo: string) {
-    const p = await this.pedidosSvc.transicionar(id, { desde: NO_FINALES, hacia: 'cancelado', evento: 'cancelado', actor: agente, detalle: motivo });
+  async cancelar(agente: Usuario, id: string, dto: MotivoCancelacionDto) {
+    const m = this.pedidosSvc.motivo('soporte', dto);
+    const p = await this.pedidosSvc.transicionar(id, {
+      desde: NO_FINALES, hacia: 'cancelado', evento: 'cancelado', actor: agente, detalle: m.texto, cambios: () => ({ motivoCodigo: m.codigo }),
+    });
     return this.pedidosSvc.vista(p, agente);
   }
 
