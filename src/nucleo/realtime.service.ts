@@ -16,6 +16,11 @@ export class RealtimeService {
     this.servidor.to(destino).emit(evento, payload);
   }
 
+  /** Une los sockets ya conectados de un usuario a una sala (por ejemplo, al crear una sucursal). */
+  unir(usuarioId: string, sala: string) {
+    this.servidor?.in(`usuario:${usuarioId}`).socketsJoin(sala);
+  }
+
   /** Desconecta todos los sockets de un usuario (por ejemplo, al banearlo). */
   desconectar(usuarioId: string) {
     this.servidor?.in(`usuario:${usuarioId}`).disconnectSockets(true);

@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { conflicto } from '../common/errores';
-import { redondear } from '../common/util';
+import { metrosEntre, redondear } from '../common/util';
 import { REGLAS } from '../config/reglas';
 
 type Punto = { lat: number; lng: number };
@@ -36,5 +36,10 @@ export class EnvioService {
 
   minutosDeTraslado(distanciaKm: number) {
     return Math.ceil(distanciaKm * REGLAS.envio.minPorKm) + 5;
+  }
+
+  /** Minutos aproximados de trayecto entre dos puntos (línea recta × factor de calles). Sin consultar la base. */
+  minutosEntre(a: Punto, b: Punto) {
+    return Math.ceil((metrosEntre(a, b) / 1000) * REGLAS.envio.factorCalles * REGLAS.envio.minPorKm);
   }
 }

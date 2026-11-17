@@ -103,7 +103,7 @@ El orden importa: primero Supabase, luego Render (al arrancar crea las tablas), 
    - No uses la conexión directa (`db.<ref>.supabase.co`): es solo IPv6 y Render no la alcanza.
    - Si la contraseña tiene `@ : / # ?`, codifícala: `node -e "console.log(encodeURIComponent('tu-pass'))"`.
 4. **Project Settings → API Keys** → copia la llave **secreta** (`sb_secret_...`) como `SUPABASE_SERVICE_KEY`. La URL del proyecto (`https://<ref>.supabase.co`) es `SUPABASE_URL`.
-5. Pon esos valores en tu `.env` y crea el bucket con su configuración (público, máximo 5 MB, solo JPG/PNG/WebP):
+5. Pon esos valores en tu `.env` y crea los dos buckets con su configuración: `papedir` (público, máximo 5 MB, solo JPG/PNG/WebP) para fotos y `papedir-privado` (privado, imágenes y PDF) para documentos como INE y licencia:
 
    ```bash
    npm run verificar -- --configurar-bucket

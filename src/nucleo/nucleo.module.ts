@@ -2,6 +2,7 @@ import { Global, Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ENTIDADES } from '../database/entities';
+import { AlmacenService } from './almacen.service';
 import { BitacoraCuentasService } from './bitacora-cuentas.service';
 import { CorreoService } from './correo.service';
 import { EnvioService } from './envio.service';
@@ -20,7 +21,7 @@ import { RealtimeService } from './realtime.service';
       }),
     }),
   ],
-  providers: [RealtimeService, PushService, EnvioService, CorreoService, BitacoraCuentasService],
-  exports: [TypeOrmModule, JwtModule, RealtimeService, PushService, EnvioService, CorreoService, BitacoraCuentasService],
+  providers: [RealtimeService, PushService, EnvioService, CorreoService, BitacoraCuentasService, AlmacenService],
+  exports: [TypeOrmModule, JwtModule, RealtimeService, PushService, EnvioService, CorreoService, BitacoraCuentasService, AlmacenService],
 })
 export class NucleoModule {}

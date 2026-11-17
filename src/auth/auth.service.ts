@@ -6,7 +6,8 @@ import { createHash, randomBytes, randomInt, timingSafeEqual } from 'crypto';
 import { DataSource, In, IsNull, MoreThan, Not, Repository } from 'typeorm';
 import { AppError, conflicto, invalido, sinPermiso } from '../common/errores';
 import { ESTADOS_FINALES, REGLAS, Rol } from '../config/reglas';
-import { CodigoVerificacion, Direccion, Dispositivo, Pedido, RefreshToken, Tienda, Usuario, Viaje } from '../database/entities';
+import { CodigoVerificacion, Direccion, Dispositivo, Documento, Pedido, RefreshToken, Tienda, Usuario, Vehiculo, Viaje } from '../database/entities';
+import { AlmacenService } from '../nucleo/almacen.service';
 import { BitacoraCuentasService } from '../nucleo/bitacora-cuentas.service';
 import { CorreoService } from '../nucleo/correo.service';
 import { RealtimeService } from '../nucleo/realtime.service';
@@ -35,6 +36,7 @@ export const vistaUsuario = (u: Usuario) => ({
   fotoUrl: u.fotoUrl ?? null,
   emailVerificado: !!u.emailVerificadoEn,
   terminosPendientes: u.terminosVersion !== REGLAS.legal.versionTerminos,
+  calificacion: u.calificacion ?? null,
   creadoEn: u.creadoEn,
 });
 
@@ -46,6 +48,7 @@ export class AuthService {
     private readonly correo: CorreoService,
     private readonly bitacora: BitacoraCuentasService,
     private readonly rt: RealtimeService,
+    private readonly almacen: AlmacenService,
     @InjectRepository(Usuario) private readonly usuarios: Repository<Usuario>,
     @InjectRepository(RefreshToken) private readonly refresh: Repository<RefreshToken>,
     @InjectRepository(Dispositivo) private readonly dispositivos: Repository<Dispositivo>,
@@ -282,6 +285,7 @@ export class AuthService {
       throw conflicto('ULTIMO_ADMIN', 'No puedes eliminar la única cuenta de admin activa');
     }
 
+    const documentos = await this.ds.getRepository(Documento).findBy({ usuarioId: u.id });
     await this.ds.transaction(async (m) => {
       await m.update(Usuario, u.id, {
         nombre: 'Usuario eliminado',
@@ -305,8 +309,12 @@ export class AuthService {
       await m.delete(RefreshToken, { usuarioId: u.id });
       await m.delete(Dispositivo, { usuarioId: u.id });
       await m.delete(CodigoVerificacion, { usuarioId: u.id });
+      await m.delete(Documento, { usuarioId: u.id });
+      await m.delete(Vehiculo, { repartidorId: u.id });
       await this.bitacora.registrar(u.id, 'eliminada', u, 'A petición del usuario', m);
     });
+    // INE, licencia...: también se borran los archivos.
+    void this.almacen.borrarPrivados(documentos.map((d) => d.ruta));
     this.rt.desconectar(u.id);
   }
 

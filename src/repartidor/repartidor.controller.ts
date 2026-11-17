@@ -1,16 +1,29 @@
 import { Body, Controller, Get, HttpCode, Param, Patch, Post, Put, Query, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { Actor, Roles } from '../common/auth';
-import { CoordenadasDto, PaginaDto } from '../common/dtos';
+import { CoordenadasDto, PaginaDto, RangoFechasDto } from '../common/dtos';
 import { UuidPipe } from '../common/util';
 import { Usuario } from '../database/entities';
-import { DisponibilidadDto, DisponiblesDto, EntregaDto, MarcaDto } from './repartidor.dto';
+import { DisponibilidadDto, DisponiblesDto, EntregaDto, MarcaDto, VehiculoDto } from './repartidor.dto';
 import { RepartidorService } from './repartidor.service';
 
 @Roles('repartidor')
 @Controller('repartidor')
 export class RepartidorController {
   constructor(private readonly svc: RepartidorService) {}
+
+  @Get('vehiculo')
+  async vehiculo(@Actor() u: Usuario, @Res({ passthrough: true }) res: Response) {
+    const v = await this.svc.vehiculo(u);
+    if (!v) res.status(204);
+    return v ?? undefined;
+  }
+
+  @Put('vehiculo')
+  guardarVehiculo(@Actor() u: Usuario, @Body() dto: VehiculoDto) { return this.svc.guardarVehiculo(u, dto); }
+
+  @Get('ganancias')
+  ganancias(@Actor() u: Usuario, @Query() q: RangoFechasDto) { return this.svc.ganancias(u, q); }
 
   @Patch('disponibilidad')
   disponibilidad(@Actor() u: Usuario, @Body() dto: DisponibilidadDto) { return this.svc.cambiarDisponibilidad(u, dto.disponible); }

@@ -7,12 +7,18 @@ import { conflicto, invalido, noEncontrado, sinPermiso } from '../common/errores
 import { coords, folio, redondear } from '../common/util';
 import { ESTADOS_FINALES, EstadoPedido, REGLAS } from '../config/reglas';
 import {
-  Calificacion, Direccion, EventoPedido, Pedido, PedidoItem, Producto, Tienda, Usuario, Viaje,
+  Calificacion, Direccion, EventoPedido, GrupoOpciones, Opcion, OpcionElegida, Pedido, PedidoItem, Producto, Tienda, Usuario,
+  Vehiculo, Viaje,
 } from '../database/entities';
 import { EnvioService } from '../nucleo/envio.service';
 import { PushService } from '../nucleo/push.service';
 import { RealtimeService } from '../nucleo/realtime.service';
 import { CalificacionDto, CotizarManualDto, CotizarPedidoDto, CrearPedidoDto, ListarPedidosDto, PedidoManualDto } from './pedidos.dto';
+
+export const vistaVehiculo = (v: Vehiculo | null | undefined) =>
+  v ? { tipo: v.tipo, marca: v.marca, modelo: v.modelo, color: v.color, placa: v.placa } : null;
+
+type Linea = { producto: Producto; cantidad: number; opciones: OpcionElegida[]; precioUnitario: number };
 
 const ESTADOS: EstadoPedido[] = ['creado', 'aceptado_tienda', 'listo_para_recoger', 'asignado', 'en_tienda', 'en_camino',
   'en_domicilio', 'entregado', 'cancelado', 'rechazado'];
@@ -67,21 +73,17 @@ export class PedidosService {
     const tienda = await this.tiendas.findOneBy({ id: dto.tiendaId });
     if (!tienda) throw noEncontrado('Tienda no encontrada');
     const dueno = await this.usuarios.findOneBy({ id: tienda.ownerId });
-    if (!tienda.abierta || dueno?.estado !== 'activo') throw conflicto('TIENDA_CERRADA', `${tienda.nombre} está cerrada`);
+    const [{ abierta }] = await this.ds.query(`SELECT tienda_abierta_ahora($1) AS abierta`, [tienda.id]);
+    if (!abierta || dueno?.estado !== 'activo') {
+      const pausa = tienda.abierta && tienda.pausadaHasta && tienda.pausadaHasta > new Date();
+      throw conflicto('TIENDA_CERRADA', pausa ? `${tienda.nombre} no está recibiendo pedidos por el momento` : `${tienda.nombre} está cerrada`);
+    }
 
     const direccion = await this.direcciones.findOneBy({ id: dto.direccionId, clienteId: cliente.id });
     if (!direccion) throw noEncontrado('Dirección no encontrada');
 
-    // Si un producto viene repetido, se suman sus cantidades.
-    const cantidades = new Map<string, number>();
-    for (const i of dto.items) cantidades.set(i.productoId, (cantidades.get(i.productoId) ?? 0) + i.cantidad);
-    const productos = await this.productos.findBy({ id: In([...cantidades.keys()]), tiendaId: tienda.id, eliminado: false });
-    if (productos.length !== cantidades.size) throw invalido('Todos los productos deben ser de la misma tienda', 'items');
-    const agotado = productos.find((p) => !p.disponible);
-    if (agotado) throw conflicto('PRODUCTO_AGOTADO', `${agotado.nombre} está agotado`);
-
-    const lineas = productos.map((p) => ({ producto: p, cantidad: cantidades.get(p.id) }));
-    const subtotal = redondear(lineas.reduce((s, l) => s + l.producto.precio * l.cantidad, 0));
+    const lineas = await this.lineas(tienda, dto.items);
+    const subtotal = redondear(lineas.reduce((s, l) => s + l.precioUnitario * l.cantidad, 0));
     if (subtotal < REGLAS.pedido.minimoProductos) {
       throw conflicto('PEDIDO_MINIMO', `El pedido mínimo es de $${REGLAS.pedido.minimoProductos} en productos`);
     }
@@ -89,6 +91,56 @@ export class PedidosService {
     const total = redondear(subtotal + costoEnvio);
     this.validarMaximo(total);
     return { tienda, direccion, lineas, subtotal, costoEnvio, total, distanciaKm };
+  }
+
+  /**
+   * Valida productos, opciones e inventario del carrito.
+   * El mismo producto con las mismas opciones se junta en una línea; con opciones distintas son líneas separadas.
+   */
+  private async lineas(tienda: Tienda, items: { productoId: string; cantidad: number; opciones?: string[] }[]): Promise<Linea[]> {
+    const ids = [...new Set(items.map((i) => i.productoId))];
+    const productos = await this.productos.findBy({ id: In(ids), tiendaId: tienda.id, eliminado: false });
+    if (productos.length !== ids.length) throw invalido('Todos los productos deben ser de la misma tienda', 'items');
+    const grupos = await this.ds.getRepository(GrupoOpciones).findBy({ productoId: In(ids) });
+    const opciones = grupos.length ? await this.ds.getRepository(Opcion).findBy({ grupoId: In(grupos.map((g) => g.id)) }) : [];
+
+    const porClave = new Map<string, Linea>();
+    items.forEach((item, idx) => {
+      const producto = productos.find((p) => p.id === item.productoId);
+      if (!producto.disponible || producto.stock === 0) throw conflicto('PRODUCTO_AGOTADO', `${producto.nombre} está agotado`);
+      const elegidas = [...new Set(item.opciones ?? [])];
+      const suyos = grupos.filter((g) => g.productoId === producto.id).sort((a, b) => a.orden - b.orden);
+      const elegidasOk = elegidas.map((id) => {
+        const o = opciones.find((x) => x.id === id && suyos.some((g) => g.id === x.grupoId));
+        if (!o) throw invalido(`Una opción elegida no pertenece a ${producto.nombre}; actualiza el menú`, `items.${idx}.opciones`);
+        if (!o.disponible) throw conflicto('PRODUCTO_AGOTADO', `${producto.nombre}: "${o.nombre}" está agotado`);
+        return o;
+      });
+      for (const g of suyos) {
+        const n = elegidasOk.filter((o) => o.grupoId === g.id).length;
+        if (n < g.minimo || n > g.maximo) {
+          const regla = g.minimo === g.maximo ? `${g.minimo}` : g.minimo ? `de ${g.minimo} a ${g.maximo}` : `hasta ${g.maximo}`;
+          throw invalido(`${producto.nombre}: en "${g.nombre}" elige ${regla}`, `items.${idx}.opciones`);
+        }
+      }
+      const snapshot: OpcionElegida[] = elegidasOk
+        .sort((a, b) => suyos.findIndex((g) => g.id === a.grupoId) - suyos.findIndex((g) => g.id === b.grupoId) || a.orden - b.orden)
+        .map((o) => ({ grupo: suyos.find((g) => g.id === o.grupoId).nombre, nombre: o.nombre, precioExtra: o.precioExtra }));
+      const clave = `${producto.id}|${elegidasOk.map((o) => o.id).sort().join(',')}`;
+      const previa = porClave.get(clave);
+      if (previa) previa.cantidad += item.cantidad;
+      else {
+        const precioUnitario = redondear(producto.precio + snapshot.reduce((s, o) => s + o.precioExtra, 0));
+        porClave.set(clave, { producto, cantidad: item.cantidad, opciones: snapshot, precioUnitario });
+      }
+    });
+
+    // Inventario: la suma de todas las líneas del mismo producto.
+    for (const p of productos.filter((x) => x.stock != null)) {
+      const pedidas = [...porClave.values()].filter((l) => l.producto.id === p.id).reduce((s, l) => s + l.cantidad, 0);
+      if (pedidas > p.stock) throw conflicto('PRODUCTO_AGOTADO', `Solo quedan ${p.stock} de ${p.nombre}`);
+    }
+    return [...porClave.values()];
   }
 
   private validarMaximo(total: number) {
@@ -140,9 +192,19 @@ export class PedidosService {
         PedidoItem,
         c.lineas.map((l) => ({
           pedidoId: p.id, productoId: l.producto.id, nombre: l.producto.nombre, cantidad: l.cantidad,
-          precioUnitario: l.producto.precio, // el precio queda fijo en el pedido
+          precioUnitario: l.precioUnitario, opciones: l.opciones, // precio y opciones quedan fijos en el pedido
         })),
       );
+      // Descuenta inventario de forma atómica: si otro pedido se llevó las últimas piezas, falla.
+      const porProducto = new Map<string, number>();
+      for (const l of c.lineas) if (l.producto.stock != null) porProducto.set(l.producto.id, (porProducto.get(l.producto.id) ?? 0) + l.cantidad);
+      for (const [productoId, cantidad] of porProducto) {
+        const [, filas] = await m.query(`UPDATE productos SET stock = stock - $2 WHERE id = $1 AND stock >= $2`, [productoId, cantidad]);
+        if (!filas) {
+          const prod = c.lineas.find((l) => l.producto.id === productoId).producto;
+          throw conflicto('PRODUCTO_AGOTADO', `Ya no quedan suficientes ${prod.nombre}`);
+        }
+      }
       await m.insert(EventoPedido, { pedidoId: p.id, tipo: 'creado', usuarioId: cliente.id, rol: cliente.rol });
       return m.findOneByOrFail(Pedido, { id: p.id });
     });
@@ -153,15 +215,23 @@ export class PedidosService {
     return vista;
   }
 
-  private async tiendaAprobada(usuario: Usuario) {
-    const tienda = await this.tiendas.findOneBy({ ownerId: usuario.id });
-    if (!tienda) throw noEncontrado('Esta cuenta no tiene una tienda');
+  /** Sucursal elegida (X-Tienda-Id) o la primera del dueño. */
+  private async sucursal(usuario: Usuario, tiendaId?: string) {
+    const tienda = tiendaId
+      ? await this.tiendas.findOneBy({ id: tiendaId, ownerId: usuario.id })
+      : await this.tiendas.findOne({ where: { ownerId: usuario.id }, order: { creadoEn: 'ASC' } });
+    if (!tienda) throw noEncontrado(tiendaId ? 'Esa sucursal no es tuya' : 'Esta cuenta no tiene una tienda');
+    return tienda;
+  }
+
+  private async tiendaAprobada(usuario: Usuario, tiendaId?: string) {
+    const tienda = await this.sucursal(usuario, tiendaId);
     if (usuario.estado !== 'activo') throw conflicto('CUENTA_PENDIENTE', 'Tu tienda está en revisión');
     return tienda;
   }
 
-  async cotizarManual(usuario: Usuario, dto: CotizarManualDto) {
-    const tienda = await this.tiendaAprobada(usuario);
+  async cotizarManual(usuario: Usuario, dto: CotizarManualDto, tiendaId?: string) {
+    const tienda = await this.tiendaAprobada(usuario, tiendaId);
     const e = await this.envio.cotizar(tienda, dto.ubicacion);
     const total = redondear(dto.montoACobrar + e.costoEnvio);
     this.validarMaximo(total);
@@ -169,8 +239,8 @@ export class PedidosService {
   }
 
   /** Pedido capturado por la tienda (ventas por fuera de la app). Nace listo para recoger. */
-  async crearManual(usuario: Usuario, dto: PedidoManualDto) {
-    const tienda = await this.tiendaAprobada(usuario);
+  async crearManual(usuario: Usuario, dto: PedidoManualDto, tiendaId?: string) {
+    const tienda = await this.tiendaAprobada(usuario, tiendaId);
     const e = await this.envio.cotizar(tienda, dto.destino.ubicacion);
     const total = redondear(dto.montoACobrar + e.costoEnvio);
     this.validarMaximo(total);
@@ -208,13 +278,16 @@ export class PedidosService {
 
   // ─────────────────────────── consultas
 
-  async listar(usuario: Usuario, q: ListarPedidosDto, soloEntregados = false) {
+  /** Rol tienda: con X-Tienda-Id, solo esa sucursal; sin header, todas las sucursales del dueño. */
+  async listar(usuario: Usuario, q: ListarPedidosDto, soloEntregados = false, tiendaId?: string) {
     const qb = this.pedidos.createQueryBuilder('p');
     if (usuario.rol === 'cliente') qb.where('p.cliente_id = :id', { id: usuario.id });
     else if (usuario.rol === 'repartidor') qb.where('p.repartidor_id = :id', { id: usuario.id });
     else if (usuario.rol === 'tienda') {
-      const tienda = await this.tiendas.findOneBy({ ownerId: usuario.id });
-      qb.where('p.tienda_id = :id', { id: tienda?.id ?? null });
+      const ids = tiendaId
+        ? [(await this.sucursal(usuario, tiendaId)).id]
+        : (await this.tiendas.findBy({ ownerId: usuario.id })).map((t) => t.id);
+      qb.where('p.tienda_id = ANY(:ids)', { ids: ids.length ? ids : ['00000000-0000-0000-0000-000000000000'] });
     } else qb.where('TRUE');
 
     const estados = soloEntregados ? ['entregado'] : this.estadosDe(q.estado);
@@ -269,11 +342,12 @@ export class PedidosService {
     if (!lista.length) return [];
     const ids = lista.map((p) => p.id);
     const idsRep = [...new Set(lista.map((p) => p.repartidorId).filter(Boolean))];
-    const [tiendas, items, reps, califs] = await Promise.all([
+    const [tiendas, items, reps, califs, vehiculos] = await Promise.all([
       this.tiendas.findBy({ id: In([...new Set(lista.map((p) => p.tiendaId))]) }),
       this.items.find({ where: { pedidoId: In(ids) } }),
       idsRep.length ? this.usuarios.findBy({ id: In(idsRep) }) : [],
       this.calificaciones.findBy({ pedidoId: In(ids) }),
+      idsRep.length ? this.ds.getRepository(Vehiculo).findBy({ repartidorId: In(idsRep) }) : [],
     ]);
 
     return lista.map((p) => {
@@ -305,7 +379,7 @@ export class PedidosService {
           .filter((i) => i.pedidoId === p.id)
           .map((i) => ({
             productoId: i.productoId, nombre: i.nombre, cantidad: i.cantidad, precioUnitario: i.precioUnitario,
-            importe: redondear(i.precioUnitario * i.cantidad),
+            opciones: i.opciones ?? [], importe: redondear(i.precioUnitario * i.cantidad),
           })),
         subtotal: p.subtotal,
         costoEnvio: p.costoEnvio,
@@ -318,13 +392,46 @@ export class PedidosService {
         calificacion: c ? { tienda: c.tienda, repartidor: c.repartidor, comentario: c.comentario, creadoEn: c.creadoEn } : null,
         notas: p.notas,
         repartidor: r
-          ? { id: r.id, nombre: r.nombre, telefono: activo ? r.telefono : null, ubicacion: activo ? coords(r.lat, r.lng) : null }
+          ? {
+              id: r.id, nombre: r.nombre, telefono: activo ? r.telefono : null, ubicacion: activo ? coords(r.lat, r.lng) : null,
+              fotoUrl: r.fotoUrl, calificacion: r.calificacion, vehiculo: vistaVehiculo(vehiculos.find((v) => v.repartidorId === r.id)),
+            }
           : null,
+        etaMin: this.eta(p, t, r),
         viajeId: p.viajeId,
         creadoEn: p.creadoEn,
         actualizadoEn: p.actualizadoEn,
       };
     });
+  }
+
+  /**
+   * Minutos aproximados para que el pedido llegue al cliente; null si ya terminó.
+   * Considera preparación, la posición del repartidor y la distancia; no el tráfico ni las otras paradas del viaje.
+   */
+  private eta(p: Pedido, t: Tienda, r: Usuario | undefined): number | null {
+    const destino = { lat: p.destinoLat, lng: p.destinoLng };
+    const repPos = r?.lat != null ? { lat: r.lat, lng: r.lng } : null;
+    const entrega = this.envio.minutosDeTraslado(p.distanciaKm);
+    switch (p.estado) {
+      case 'creado':
+      case 'aceptado_tienda': {
+        const transcurridos = (Date.now() - p.creadoEn.getTime()) / 60000;
+        return Math.max(0, Math.ceil(t.tiempoPreparacionMin - transcurridos)) + entrega;
+      }
+      case 'listo_para_recoger':
+        return entrega + 5; // tiempo para que un repartidor lo tome
+      case 'asignado':
+        return (repPos ? this.envio.minutosEntre(repPos, t) : 5) + entrega;
+      case 'en_tienda':
+        return entrega;
+      case 'en_camino':
+        return repPos ? this.envio.minutosEntre(repPos, destino) : entrega;
+      case 'en_domicilio':
+        return 0;
+      default:
+        return null;
+    }
   }
 
   /** Lo que ve un repartidor antes de tomar el pedido (sin datos personales del cliente). */
@@ -360,6 +467,15 @@ export class PedidosService {
         throw conflicto('TRANSICION_INVALIDA', `No se puede hacer esto con un pedido en estado "${p.estado}"`);
       }
       await t.reglas?.(p, m);
+      // Un pedido cancelado o rechazado devuelve sus piezas al inventario.
+      if ((t.hacia === 'cancelado' || t.hacia === 'rechazado') && p.origen === 'app') {
+        await m.query(
+          `UPDATE productos pr SET stock = pr.stock + i.cantidad
+           FROM (SELECT producto_id, sum(cantidad)::int AS cantidad FROM pedido_items WHERE pedido_id = $1 GROUP BY 1) i
+           WHERE pr.id = i.producto_id AND pr.stock IS NOT NULL`,
+          [p.id],
+        );
+      }
       const viajeId = p.viajeId;
       repartidorAnterior = p.repartidorId;
       Object.assign(p, t.cambios?.(p) ?? {}, { estado: t.hacia });
@@ -482,6 +598,12 @@ export class PedidosService {
         `UPDATE tiendas SET calificacion = (SELECT round(avg(tienda), 2) FROM calificaciones WHERE tienda_id = $1) WHERE id = $1`,
         [p.tiendaId],
       );
+      if (p.repartidorId) {
+        await m.query(
+          `UPDATE usuarios SET calificacion = (SELECT round(avg(repartidor), 2) FROM calificaciones WHERE repartidor_id = $1) WHERE id = $1`,
+          [p.repartidorId],
+        );
+      }
       await m.insert(EventoPedido, { pedidoId: id, tipo: 'calificado', usuarioId: cliente.id, rol: cliente.rol });
       return fila;
     });
