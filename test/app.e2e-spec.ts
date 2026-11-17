@@ -413,7 +413,7 @@ describe('PaPedir API', () => {
       const t = (await api('post', '/tickets', 'cliente', { pedidoId: id.pedido, asunto: 'Faltó un taco', descripcion: 'Llegaron 9' }).expect(201)).body;
       expect(t.folio).toMatch(/^T-\d{6}$/);
       expect((await api('post', '/tickets', 'cliente', { pedidoId: id.pedido, asunto: 'Otra vez', descripcion: '...' }).expect(409)).body.error).toBe('TICKET_DUPLICADO');
-      await api('post', '/tickets', 'rep2', { pedidoId: id.pedido, asunto: 'No es mío', descripcion: '...' }).expect(403);
+      await api('post', '/tickets', id.otro, { pedidoId: id.pedido, asunto: 'No es mío', descripcion: '...' }).expect(403); // el repartidor que no ganó el pedido
       await api('get', `/tickets/${t.id}`, 'tienda').expect(403);
 
       expect((await api('patch', `/soporte/tickets/${t.id}`, 'soporte', { asignarmelo: true }).expect(200)).body.estado).toBe('en_atencion');
