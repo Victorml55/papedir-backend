@@ -53,8 +53,10 @@ export class RepartidorService {
     const filas = await this.ds.query(
       `SELECT to_char((entregado_en AT TIME ZONE '${zona}')::date, 'YYYY-MM-DD') AS fecha,
               count(*)::int AS pedidos, count(DISTINCT viaje_id)::int AS viajes,
-              sum(costo_envio)::float8 AS envio, sum(total)::float8 AS cobrado, sum(subtotal)::float8 AS pagado,
-              sum(distancia_km)::float8 AS km
+              sum(costo_envio)::float8 AS envio, sum(propina)::float8 AS propinas, sum(total)::float8 AS cobrado,
+              sum(monto_tienda)::float8 AS pagado, sum(distancia_km)::float8 AS km,
+              coalesce(sum(comision_envio), 0)::float8 AS comision,
+              coalesce(sum(descuento) FILTER (WHERE descuento_absorbe = 'plataforma'), 0)::float8 AS reembolso
        FROM pedidos
        WHERE repartidor_id = $1 AND estado = 'entregado'
          AND entregado_en >= ($2::date)::timestamp AT TIME ZONE '${zona}'
@@ -62,8 +64,11 @@ export class RepartidorService {
        GROUP BY 1 ORDER BY 1`,
       [rep.id, desde, hasta],
     );
+    // gananciaNeta = envío + propinas − comisión de PaPedir + cupones de PaPedir que se le reembolsan.
     const dia = (f: any) => ({
-      fecha: f.fecha, pedidos: f.pedidos, viajes: f.viajes, gananciaEnvio: redondear(f.envio),
+      fecha: f.fecha, pedidos: f.pedidos, viajes: f.viajes, gananciaEnvio: redondear(f.envio), propinas: redondear(f.propinas),
+      comisionPlataforma: redondear(f.comision), reembolsoCupones: redondear(f.reembolso),
+      gananciaNeta: redondear(f.envio + f.propinas - f.comision + f.reembolso),
       efectivoCobrado: redondear(f.cobrado), pagadoATiendas: redondear(f.pagado), kmRecorridos: redondear(f.km),
     });
     const suma = (k: string) => redondear(filas.reduce((s, f) => s + Number(f[k]), 0));
@@ -75,6 +80,10 @@ export class RepartidorService {
         pedidos: filas.reduce((s, f) => s + f.pedidos, 0),
         viajes: filas.reduce((s, f) => s + f.viajes, 0),
         gananciaEnvio: suma('envio'),
+        propinas: suma('propinas'),
+        comisionPlataforma: suma('comision'),
+        reembolsoCupones: suma('reembolso'),
+        gananciaNeta: redondear(suma('envio') + suma('propinas') - suma('comision') + suma('reembolso')),
         efectivoCobrado: suma('cobrado'),
         pagadoATiendas: suma('pagado'),
         kmRecorridos: suma('km'),
@@ -218,9 +227,10 @@ export class RepartidorService {
       estado: viaje.estado,
       maxPedidos: R.maxPedidosPorViaje,
       // Efectivo: paga el subtotal en cada tienda al recoger y cobra el total en cada domicilio.
-      efectivoAPagarTiendas: redondear(pedidos.filter((p) => porRecoger(p.estado)).reduce((s, p) => s + p.subtotal, 0)),
+      efectivoAPagarTiendas: redondear(pedidos.filter((p) => porRecoger(p.estado)).reduce((s, p) => s + p.montoTienda, 0)),
       efectivoACobrar: redondear(pedidos.filter((p) => p.estado !== 'entregado').reduce((s, p) => s + p.total, 0)),
       gananciaEnvio: redondear(pedidos.reduce((s, p) => s + p.costoEnvio, 0)),
+      propinas: redondear(pedidos.reduce((s, p) => s + p.propina, 0)),
       paradas: this.ordenarParadas(vistas, rep),
       pedidos: vistas,
     };

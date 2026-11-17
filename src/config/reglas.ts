@@ -16,7 +16,26 @@ export const REGLAS = {
     maximoEfectivo: 1500,
     minutosParaAceptar: 5,
     horasParaCalificar: 24,
+    propinaMax: 500,
+    // Pedidos programados: la hora es la de entrega deseada.
+    programadoMinMinutos: 45,
+    programadoMaxDias: 7,
+    margenProgramadoMin: 10, // se manda a la tienda con preparación + traslado + este margen de anticipación
+    maxTiendasPorGrupo: 3, // un carrito puede juntar pedidos de hasta 3 tiendas
   },
+  // Valores por defecto; admin los cambia en /admin/configuracion sin redesplegar.
+  comisiones: {
+    tiendaPct: 10, // % sobre lo que la tienda cobra por productos
+    envioPct: 10, // % sobre el costo de envío (incluye recargos)
+  },
+  // Tarifas dinámicas: se suman al envío y se las queda el repartidor. Apagadas hasta que admin las active.
+  recargos: {
+    nocturno: { activo: false, desde: '22:00', hasta: '06:00', monto: 10 },
+    lluvia: { activo: false, monto: 15 },
+    demanda: { activo: false, pedidosEsperando: 5, monto: 10 }, // pedidos listos con más de 5 min sin repartidor
+  },
+  notificaciones: { diasConservar: 60 },
+  chat: { maxTexto: 500 },
   repartidor: {
     radioKm: 3,
     radioAmpliadoKm: 6, // pedidos con más de minutosAmpliar sin repartidor
@@ -66,6 +85,7 @@ export const REGLAS = {
 export type Rol = 'cliente' | 'tienda' | 'repartidor' | 'soporte' | 'admin';
 export type EstadoCuenta = 'pendiente_aprobacion' | 'activo' | 'baneado' | 'eliminado';
 export type EstadoPedido =
+  | 'programado'
   | 'creado'
   | 'aceptado_tienda'
   | 'listo_para_recoger'
@@ -78,4 +98,34 @@ export type EstadoPedido =
   | 'rechazado';
 
 export const ESTADOS_FINALES: EstadoPedido[] = ['entregado', 'cancelado', 'rechazado'];
+
+/** Catálogo de motivos de cancelación y rechazo (para que las apps muestren opciones y para las métricas). */
+export const MOTIVOS = {
+  cliente: [
+    ['cambio_de_opinion', 'Cambié de opinión'],
+    ['tarda_demasiado', 'Tarda demasiado'],
+    ['direccion_incorrecta', 'Me equivoqué de dirección'],
+    ['pedido_incorrecto', 'Me equivoqué en el pedido'],
+    ['otro', 'Otro motivo'],
+  ],
+  tienda: [
+    ['sin_ingredientes', 'Se acabó algún producto'],
+    ['muy_ocupado', 'Tenemos demasiados pedidos'],
+    ['cerrando', 'Estamos por cerrar'],
+    ['problema_tecnico', 'Problema en la tienda'],
+    ['otro', 'Otro motivo'],
+  ],
+  soporte: [
+    ['cliente_no_localizable', 'No se localizó al cliente'],
+    ['repartidor_sin_disponibilidad', 'No hubo repartidor'],
+    ['incidente_en_ruta', 'Incidente en la ruta'],
+    ['fraude', 'Sospecha de fraude'],
+    ['solicitud_cliente', 'El cliente lo pidió a soporte'],
+    ['otro', 'Otro motivo'],
+  ],
+  sistema: [
+    ['tienda_no_respondio', 'La tienda no respondió a tiempo'],
+    ['tienda_cerrada', 'La tienda no abrió para el pedido programado'],
+  ],
+} as const;
 export const ESTADOS_CON_REPARTIDOR: EstadoPedido[] = ['asignado', 'en_tienda', 'en_camino', 'en_domicilio'];

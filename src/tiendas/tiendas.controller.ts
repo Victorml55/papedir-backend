@@ -1,6 +1,6 @@
 import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Put, Query } from '@nestjs/common';
 import { Actor, Roles, TiendaSel } from '../common/auth';
-import { RangoFechasDto } from '../common/dtos';
+import { PaginaDto, RangoFechasDto } from '../common/dtos';
 import { UuidPipe } from '../common/util';
 import { Usuario } from '../database/entities';
 import {
@@ -82,6 +82,9 @@ export class TiendasController {
 
   @Get('tiendas/:id')
   detalle(@Param('id', UuidPipe) id: string) { return this.svc.detalle(id); }
+
+  @Get('tiendas/:id/resenas')
+  resenas(@Param('id', UuidPipe) id: string, @Query() q: PaginaDto) { return this.svc.resenas(id, q); }
 
   @Get('tiendas/:id/menu')
   menu(@Param('id', UuidPipe) id: string) { return this.svc.menu(id); }
