@@ -1,6 +1,6 @@
 import { Type } from 'class-transformer';
 import {
-  IsEmail, IsIn, IsNotEmpty, IsOptional, IsString, Matches, MaxLength, MinLength, ValidateIf, ValidateNested,
+  Equals, IsEmail, IsIn, IsNotEmpty, IsOptional, IsString, Matches, MaxLength, MinLength, ValidateIf, ValidateNested,
 } from 'class-validator';
 import { CoordenadasDto } from '../common/dtos';
 
@@ -21,6 +21,8 @@ export class RegistroDto {
   @IsString() @MinLength(8) @MaxLength(72) password: string;
   @Matches(TELEFONO, { message: 'telefono debe tener 10 dígitos' }) telefono: string;
   @IsIn(['cliente', 'tienda', 'repartidor']) rol: 'cliente' | 'tienda' | 'repartidor';
+  /** El usuario aceptó el aviso de privacidad y los términos vigentes (GET /legal). */
+  @Equals(true, { message: 'Debes aceptar el aviso de privacidad y los términos para crear tu cuenta' }) aceptoTerminos: boolean;
   @ValidateIf((o) => o.rol === 'tienda')
   @IsNotEmpty({ message: 'tienda es obligatorio cuando rol = tienda' })
   @ValidateNested() @Type(() => TiendaRegistroDto) tienda?: TiendaRegistroDto;
@@ -39,6 +41,37 @@ export class RefreshDto {
 export class PerfilDto {
   @IsOptional() @IsString() @IsNotEmpty() @MaxLength(80) nombre?: string;
   @IsOptional() @Matches(TELEFONO, { message: 'telefono debe tener 10 dígitos' }) telefono?: string;
+  /** URL devuelta por POST /uploads (tipo perfil); null quita la foto. */
+  @IsOptional() @IsString() @MaxLength(500) fotoUrl?: string | null;
+}
+
+const CODIGO = /^[0-9]{6}$/;
+
+export class RecuperarDto {
+  @IsEmail() email: string;
+}
+
+export class RestablecerDto {
+  @IsEmail() email: string;
+  @Matches(CODIGO, { message: 'codigo debe tener 6 dígitos' }) codigo: string;
+  @IsString() @MinLength(8) @MaxLength(72) password: string;
+}
+
+export class CodigoDto {
+  @Matches(CODIGO, { message: 'codigo debe tener 6 dígitos' }) codigo: string;
+}
+
+export class CambiarPasswordDto {
+  @IsString() @IsNotEmpty() actual: string;
+  @IsString() @MinLength(8) @MaxLength(72) nueva: string;
+}
+
+export class ConfirmarPasswordDto {
+  @IsString() @IsNotEmpty() password: string;
+}
+
+export class TerminosDto {
+  @IsString() @IsNotEmpty() version: string;
 }
 
 export class DispositivoDto {

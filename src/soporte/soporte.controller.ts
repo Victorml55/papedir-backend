@@ -33,14 +33,23 @@ export class SoporteController {
   @Get('usuarios')
   usuarios(@Query() q: BuscarUsuariosDto) { return this.svc.buscarUsuarios(q); }
 
+  @Get('usuarios/:id')
+  usuario(@Param('id', UuidPipe) id: string) { return this.svc.detalle(id); }
+
+  @Get('usuarios/:id/eventos')
+  eventosUsuario(@Param('id', UuidPipe) id: string) { return this.svc.eventos(id); }
+
+  @Post('usuarios/:id/desbloquear') @HttpCode(200)
+  desbloquear(@Actor() u: Usuario, @Param('id', UuidPipe) id: string) { return this.svc.desbloquear(u, id); }
+
   @Post('usuarios/:id/aprobar') @HttpCode(200)
-  aprobar(@Param('id', UuidPipe) id: string) { return this.svc.aprobar(id); }
+  aprobar(@Actor() u: Usuario, @Param('id', UuidPipe) id: string) { return this.svc.aprobar(u, id); }
 
   @Post('usuarios/:id/banear') @HttpCode(200)
   banear(@Actor() u: Usuario, @Param('id', UuidPipe) id: string, @Body() dto: MotivoDto) { return this.svc.banear(u, id, dto.motivo); }
 
   @Post('usuarios/:id/desbanear') @HttpCode(200)
-  desbanear(@Param('id', UuidPipe) id: string) { return this.svc.desbanear(id); }
+  desbanear(@Actor() u: Usuario, @Param('id', UuidPipe) id: string) { return this.svc.desbanear(u, id); }
 }
 
 @Roles('admin')
@@ -49,7 +58,7 @@ export class AdminController {
   constructor(private readonly svc: SoporteService) {}
 
   @Post('usuarios')
-  crear(@Body() dto: UsuarioInternoDto) { return this.svc.crearInterno(dto); }
+  crear(@Actor() u: Usuario, @Body() dto: UsuarioInternoDto) { return this.svc.crearInterno(u, dto); }
 
   @Get('metricas')
   metricas(@Query() q: MetricasDto) { return this.svc.metricas(q); }

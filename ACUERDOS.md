@@ -183,6 +183,10 @@ El campo `error` es un código estable; las apps deciden con él, no con el text
 | `FUERA_DE_RANGO` | Marca de llegada a más de 150 m | "Acércate a la ubicación" |
 | `CODIGO_INCORRECTO` | El código de entrega no coincide | Pedirlo de nuevo |
 | `TRANSICION_INVALIDA` | El estado ya cambió (otro actor o soporte) | Refrescar el pedido |
+| `CUENTA_BLOQUEADA` | 5 contraseñas equivocadas seguidas; dura 15 min | Ofrecer "¿Olvidaste tu contraseña?" |
+| `CODIGO_INVALIDO` | Código de correo incorrecto, vencido o ya usado | Pedir que lo revise o enviar otro |
+| `PASSWORD_INCORRECTA` | Contraseña actual equivocada al cambiarla o al eliminar la cuenta | Marcar el campo |
+| `TIENE_PEDIDOS_ACTIVOS` | Quiere eliminar su cuenta con pedidos en curso | Aviso: terminar o cancelar primero |
 
 La lista completa está en el schema `Error` de `openapi.yaml`. Todos los valores numéricos (montos, distancias, tiempos) están en la sección de reglas de negocio de la Definición del proyecto.
 
@@ -193,6 +197,8 @@ La lista completa está en el schema `Error` de `openapi.yaml`. Todos los valore
 - Los tokens se guardan con `flutter_secure_storage`, nunca en `SharedPreferences`.
 - Un interceptor de `dio` en `core` agrega el token y maneja el refresh automáticamente.
 - Después del login se registra el token de FCM con `PUT /usuarios/me/dispositivo`.
+- El registro envía `aceptoTerminos: true` después de mostrar las ligas de `GET /legal`. Si `usuario.terminosPendientes` es `true`, la app pide aceptar los nuevos con `POST /usuarios/me/terminos`.
+- Cuentas (las 3 apps): recuperar contraseña (`/auth/recuperar` → `/auth/restablecer`), verificar correo (opcional), cambiar contraseña, foto de perfil (`/uploads` con `tipo = perfil`), cerrar sesión en todos lados y eliminar cuenta (`DELETE /usuarios/me`). Las tiendas de Apple y Google exigen poder eliminar la cuenta desde la app.
 
 ### Estados del pedido
 

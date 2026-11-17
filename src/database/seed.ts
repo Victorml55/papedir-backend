@@ -7,6 +7,7 @@ import { NestFactory } from '@nestjs/core';
 import * as bcrypt from 'bcryptjs';
 import { DataSource } from 'typeorm';
 import { AppModule } from '../app.module';
+import { REGLAS } from '../config/reglas';
 import { PedidosService } from '../pedidos/pedidos.service';
 import { CategoriaProducto, Direccion, Producto, Tienda, Usuario } from './entities';
 
@@ -69,7 +70,8 @@ async function main() {
 
   if (reset) {
     await ds.query(`TRUNCATE mensajes, tickets, calificaciones, eventos_pedido, pedido_items, pedidos, viajes, productos,
-      categorias_producto, tiendas, direcciones, dispositivos, refresh_tokens, usuarios RESTART IDENTITY CASCADE`);
+      categorias_producto, tiendas, direcciones, dispositivos, refresh_tokens, codigos_verificacion, eventos_cuenta, usuarios
+      RESTART IDENTITY CASCADE`);
   } else if (await ds.getRepository(Usuario).count()) {
     console.log('La base ya tiene datos; no se sembró nada. Usa "npm run seed -- --reset" para empezar de cero.');
     return app.close();
@@ -77,7 +79,8 @@ async function main() {
 
   const passwordHash = await bcrypt.hash(PASSWORD, 10);
   const usuarios = ds.getRepository(Usuario);
-  const crear = (u: Partial<Usuario>) => usuarios.save(usuarios.create({ passwordHash, estado: 'activo', ...u }));
+  const listos = { terminosVersion: REGLAS.legal.versionTerminos, terminosAceptadosEn: new Date(), emailVerificadoEn: new Date() };
+  const crear = (u: Partial<Usuario>) => usuarios.save(usuarios.create({ passwordHash, estado: 'activo', ...listos, ...u }));
 
   const cliente = await crear({ nombre: 'Ana López', email: 'cliente@papedir.test', telefono: '4611234567', rol: 'cliente' });
   await crear({ nombre: 'Carlos Ruiz', email: 'repartidor@papedir.test', telefono: '4611112233', rol: 'repartidor', lat: 20.524, lng: -100.814, ubicacionEn: new Date() });

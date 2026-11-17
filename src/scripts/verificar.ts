@@ -1,6 +1,6 @@
 /**
  * Revisa que la configuración (.env o variables del entorno) funcione de verdad:
- *   npm run verificar                          base de datos, PostGIS, JWT, CORS, Storage y Firebase
+ *   npm run verificar                          base de datos, PostGIS, JWT, CORS, Storage, Firebase y correo
  *   npm run verificar -- --configurar-bucket   además crea/ajusta el bucket de Supabase Storage
  *   npm run verificar -- --push <fcmToken>     además envía una notificación de prueba a ese dispositivo
  * Sale con código 1 si algo obligatorio falla.
@@ -236,12 +236,39 @@ async function firebase() {
   await deleteApp(app);
 }
 
+async function correo() {
+  seccion('Correo (Resend)');
+  const llave = process.env.RESEND_API_KEY;
+  if (!llave) {
+    return aviso('Sin RESEND_API_KEY: los códigos de verificación y de recuperar contraseña solo se escriben en el log');
+  }
+  const r = await fetch('https://api.resend.com/domains', { headers: { Authorization: `Bearer ${llave}` } }).catch((e) => e as Error);
+  if (r instanceof Error) return falla(`No se pudo contactar a Resend: ${r.message}`);
+  if (r.status === 401 || r.status === 403) {
+    // Las llaves "Sending access" no pueden listar dominios, pero sí son válidas para enviar.
+    const cuerpo = await r.text();
+    if (/restricted|sending/i.test(cuerpo)) ok('Llave de Resend con permiso de solo envío');
+    else return falla('Resend rechazó RESEND_API_KEY');
+  } else if (!r.ok) {
+    return falla(`Resend respondió ${r.status}`);
+  } else {
+    const dominios = ((await r.json()).data ?? []).filter((d: any) => d.status === 'verified').map((d: any) => d.name);
+    ok(dominios.length ? `Llave válida; dominios verificados: ${dominios.join(', ')}` : 'Llave válida, sin dominios verificados');
+  }
+  const remitente = process.env.CORREO_REMITENTE || 'PaPedir <onboarding@resend.dev>';
+  console.log(`    Remitente: ${remitente}`);
+  if (remitente.includes('resend.dev')) {
+    aviso('Con onboarding@resend.dev Resend solo entrega al correo dueño de la cuenta de Resend. Para enviar a cualquiera, verifica un dominio y cambia CORREO_REMITENTE');
+  }
+}
+
 async function main() {
   console.log(`PaPedir · verificación de configuración (NODE_ENV=${process.env.NODE_ENV ?? 'sin definir'})`);
   await baseDeDatos();
   seguridad();
   await storage();
   await firebase();
+  await correo();
   console.log(fallas ? `\n${fallas} problema(s) por corregir.` : '\nTodo en orden.');
   process.exit(fallas ? 1 : 0);
 }

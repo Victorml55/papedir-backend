@@ -11,7 +11,7 @@ import { REGLAS } from '../config/reglas';
 const EXT: Record<string, string> = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
 
 export class SubidaDto {
-  @IsIn(['producto', 'tienda', 'evidencia']) tipo: string;
+  @IsIn(['producto', 'tienda', 'evidencia', 'perfil']) tipo: string;
 }
 
 /**
