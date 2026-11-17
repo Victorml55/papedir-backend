@@ -22,7 +22,7 @@ export class AtenderTicketDto {
 
 export class BuscarUsuariosDto extends PaginaDto {
   @IsOptional() @IsIn(['cliente', 'tienda', 'repartidor', 'soporte', 'admin']) rol?: string;
-  @IsOptional() @IsIn(['pendiente_aprobacion', 'activo', 'baneado']) estado?: string;
+  @IsOptional() @IsIn(['pendiente_aprobacion', 'activo', 'baneado', 'eliminado']) estado?: string;
   @IsOptional() @IsString() @MaxLength(60) q?: string;
 }
 

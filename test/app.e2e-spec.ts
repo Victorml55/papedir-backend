@@ -17,6 +17,7 @@ import request from 'supertest';
 import { DataSource } from 'typeorm';
 import { AppModule } from '../src/app.module';
 import { configurar } from '../src/main';
+import { CorreoService } from '../src/nucleo/correo.service';
 import { TareasService } from '../src/pedidos/tareas.service';
 
 const PASS = 'PaPedir123!';
@@ -40,7 +41,7 @@ describe('PaPedir API', () => {
   };
   const registrar = async (alias: string, rol: string, extra: any = {}) => {
     const r = await api('post', '/auth/register', undefined, {
-      nombre: `Usuario ${alias}`, email: `${alias}@prueba.test`, password: PASS, telefono: '4610000000', rol, ...extra,
+      nombre: `Usuario ${alias}`, email: `${alias}@prueba.test`, password: PASS, telefono: '4610000000', rol, aceptoTerminos: true, ...extra,
     }).expect(201);
     tok[alias] = r.body.accessToken;
     id[alias] = r.body.usuario.id;
@@ -96,10 +97,10 @@ describe('PaPedir API', () => {
     });
 
     it('exige los datos de la tienda cuando rol = tienda', () =>
-      api('post', '/auth/register', undefined, { nombre: 'X', email: 'x@prueba.test', password: PASS, telefono: '4610000000', rol: 'tienda' }).expect(400));
+      api('post', '/auth/register', undefined, { nombre: 'X', email: 'x@prueba.test', password: PASS, telefono: '4610000000', rol: 'tienda', aceptoTerminos: true }).expect(400));
 
     it('rechaza correos repetidos y contraseñas incorrectas', async () => {
-      const r = await api('post', '/auth/register', undefined, { nombre: 'Otro', email: 'CLIENTE@prueba.test', password: PASS, telefono: '4610000000', rol: 'cliente' }).expect(409);
+      const r = await api('post', '/auth/register', undefined, { nombre: 'Otro', email: 'CLIENTE@prueba.test', password: PASS, telefono: '4610000000', rol: 'cliente', aceptoTerminos: true }).expect(409);
       expect(r.body.error).toBe('EMAIL_REGISTRADO');
       await api('post', '/auth/login', undefined, { email: 'cliente@prueba.test', password: 'incorrecta', app: 'cliente' }).expect(401);
     });
@@ -468,6 +469,131 @@ describe('PaPedir API', () => {
       expect(await ver()).toContain(id.quinto);
       expect(await app.get(TareasService).avisarSinRepartidor()).toBe(1);
       expect(await app.get(TareasService).avisarSinRepartidor()).toBe(0); // solo avisa una vez
+    });
+  });
+
+  describe('Fase 1: cuentas y seguridad', () => {
+    const correos = () => app.get(CorreoService).enviados;
+    const ultimoCodigo = (email: string) => {
+      const c = [...correos()].reverse().find((x) => x.para === email);
+      return c?.texto.match(/^\d{6}$/m)?.[0];
+    };
+    const login = (email: string, password = PASS, app = 'cliente') => api('post', '/auth/login', undefined, { email, password, app });
+
+    it('exige aceptar los términos al registrarse y publica la versión vigente', async () => {
+      const r = await api('post', '/auth/register', undefined, { nombre: 'Sin términos', email: 'st@prueba.test', password: PASS, telefono: '4610000000', rol: 'cliente' }).expect(400);
+      expect(r.body.detalles.map((d) => d.campo)).toContain('aceptoTerminos');
+      const legal = (await api('get', '/legal').expect(200)).body;
+      expect(legal).toMatchObject({ version: expect.any(String), avisoPrivacidadUrl: expect.stringContaining('/privacidad') });
+    });
+
+    it('verifica el correo con el código que llega al registrarse', async () => {
+      const u = await registrar('nuevo', 'cliente');
+      expect(u.usuario).toMatchObject({ emailVerificado: false, terminosPendientes: false, fotoUrl: null });
+      const codigo = ultimoCodigo('nuevo@prueba.test');
+      expect(codigo).toMatch(/^\d{6}$/);
+      const otro = codigo === '000000' ? '111111' : '000000';
+      expect((await api('post', '/auth/verificar-correo', 'nuevo', { codigo: otro }).expect(400)).body.error).toBe('CODIGO_INVALIDO');
+      expect((await api('post', '/auth/verificar-correo', 'nuevo', { codigo }).expect(200)).body.emailVerificado).toBe(true);
+      expect((await api('post', '/auth/verificar-correo/reenviar', 'nuevo').expect(409)).body.error).toBe('CORREO_YA_VERIFICADO');
+    });
+
+    it('recupera la contraseña con un código y cierra las sesiones abiertas', async () => {
+      const antes = correos().length;
+      await api('post', '/auth/recuperar', undefined, { email: 'noexiste@prueba.test' }).expect(204);
+      expect(correos().length).toBe(antes); // no revela si el correo existe
+
+      const sesion = (await login('nuevo@prueba.test').expect(200)).body;
+      await api('post', '/auth/recuperar', undefined, { email: 'NUEVO@prueba.test' }).expect(204);
+      const codigo = ultimoCodigo('nuevo@prueba.test');
+      await api('post', '/auth/restablecer', undefined, { email: 'nuevo@prueba.test', codigo: codigo === '000000' ? '111111' : '000000', password: 'NuevaClave2026' }).expect(400);
+      await api('post', '/auth/restablecer', undefined, { email: 'nuevo@prueba.test', codigo, password: 'NuevaClave2026' }).expect(204);
+      await api('post', '/auth/restablecer', undefined, { email: 'nuevo@prueba.test', codigo, password: 'OtraClave2026' }).expect(400); // un solo uso
+
+      await api('post', '/auth/refresh', undefined, { refreshToken: sesion.refreshToken }).expect(401);
+      await login('nuevo@prueba.test').expect(401);
+      tok.nuevo = (await login('nuevo@prueba.test', 'NuevaClave2026').expect(200)).body.accessToken;
+    });
+
+    it('un código deja de servir tras 5 intentos equivocados', async () => {
+      await api('post', '/auth/recuperar', undefined, { email: 'nuevo@prueba.test' }).expect(204);
+      const codigo = ultimoCodigo('nuevo@prueba.test');
+      const malo = codigo === '000000' ? '111111' : '000000';
+      for (let i = 0; i < 5; i++) await api('post', '/auth/restablecer', undefined, { email: 'nuevo@prueba.test', codigo: malo, password: 'NoImporta2026' }).expect(400);
+      await api('post', '/auth/restablecer', undefined, { email: 'nuevo@prueba.test', codigo, password: 'NoImporta2026' }).expect(400);
+    });
+
+    it('bloquea la cuenta tras 5 contraseñas equivocadas y soporte la desbloquea', async () => {
+      for (let i = 0; i < 4; i++) await login('nuevo@prueba.test', 'equivocada').expect(401);
+      expect((await login('nuevo@prueba.test', 'equivocada').expect(403)).body.error).toBe('CUENTA_BLOQUEADA');
+      expect((await login('nuevo@prueba.test', 'NuevaClave2026').expect(403)).body.error).toBe('CUENTA_BLOQUEADA');
+
+      const ficha = (await api('get', `/soporte/usuarios/${id.nuevo}`, 'soporte').expect(200)).body;
+      expect(ficha.bloqueadoHasta).toBeTruthy();
+      await api('post', `/soporte/usuarios/${id.nuevo}/desbloquear`, 'soporte').expect(200);
+      await login('nuevo@prueba.test', 'NuevaClave2026').expect(200);
+
+      const eventos = (await api('get', `/soporte/usuarios/${id.nuevo}/eventos`, 'soporte').expect(200)).body.map((e) => e.tipo);
+      expect(eventos).toEqual(expect.arrayContaining(['registrada', 'correo_verificado', 'password_restablecida', 'bloqueada', 'desbloqueada']));
+      await api('get', `/soporte/usuarios/${id.nuevo}/eventos`, 'nuevo').expect(403);
+    });
+
+    it('cambia la contraseña, devuelve tokens nuevos y cierra las otras sesiones', async () => {
+      const otra = (await login('nuevo@prueba.test', 'NuevaClave2026').expect(200)).body;
+      expect((await api('put', '/usuarios/me/password', 'nuevo', { actual: 'mal', nueva: 'Cambio2026x' }).expect(403)).body.error).toBe('PASSWORD_INCORRECTA');
+      await api('put', '/usuarios/me/password', 'nuevo', { actual: 'NuevaClave2026', nueva: 'NuevaClave2026' }).expect(400);
+      const r = await api('put', '/usuarios/me/password', 'nuevo', { actual: 'NuevaClave2026', nueva: 'Cambio2026x' }).expect(200);
+      expect(r.body.refreshToken).toBeDefined();
+      await api('post', '/auth/refresh', undefined, { refreshToken: otra.refreshToken }).expect(401);
+      await api('post', '/auth/refresh', undefined, { refreshToken: r.body.refreshToken }).expect(200);
+    });
+
+    it('cerrar sesión en todos lados invalida los refresh tokens', async () => {
+      const a = (await login('nuevo@prueba.test', 'Cambio2026x').expect(200)).body;
+      tok.nuevo = a.accessToken;
+      await api('post', '/auth/logout-todos', 'nuevo').expect(204);
+      await api('post', '/auth/refresh', undefined, { refreshToken: a.refreshToken }).expect(401);
+    });
+
+    it('pide aceptar los términos cuando cambia la versión', async () => {
+      await ds.query(`UPDATE usuarios SET terminos_version = '2020-01' WHERE id = $1`, [id.nuevo]);
+      expect((await api('get', '/auth/me', 'nuevo').expect(200)).body.terminosPendientes).toBe(true);
+      expect((await api('post', '/usuarios/me/terminos', 'nuevo', { version: '2020-01' }).expect(409)).body.error).toBe('VERSION_TERMINOS');
+      const { version } = (await api('get', '/legal')).body;
+      expect((await api('post', '/usuarios/me/terminos', 'nuevo', { version }).expect(200)).body.terminosPendientes).toBe(false);
+    });
+
+    it('guarda la foto de perfil', async () => {
+      const r = await api('patch', '/usuarios/me', 'nuevo', { fotoUrl: 'https://ejemplo.test/yo.webp' }).expect(200);
+      expect(r.body.fotoUrl).toBe('https://ejemplo.test/yo.webp');
+      expect((await api('patch', '/usuarios/me', 'nuevo', { fotoUrl: null }).expect(200)).body.fotoUrl).toBeNull();
+    });
+
+    it('no deja eliminar la cuenta con pedidos en curso ni a la única cuenta de admin', async () => {
+      const cuerpo = { tiendaId: id.tiendaId, direccionId: id.casa, items: [{ productoId: id.pastor, cantidad: 1 }] };
+      const p = (await api('post', '/pedidos', 'cliente', cuerpo).expect(201)).body;
+      expect((await api('delete', '/usuarios/me', 'cliente', { password: PASS }).expect(409)).body.error).toBe('TIENE_PEDIDOS_ACTIVOS');
+      await api('post', `/pedidos/${p.id}/cancelar`, 'cliente', { motivo: 'Prueba' }).expect(200);
+      expect((await api('delete', '/usuarios/me', 'admin', { password: PASS }).expect(409)).body.error).toBe('ULTIMO_ADMIN');
+    });
+
+    it('elimina la cuenta: borra sus datos personales y conserva los pedidos sin ellos', async () => {
+      await registrar('borrar', 'cliente');
+      await api('post', '/direcciones', 'borrar', { alias: 'Casa', texto: 'Calle 1', ubicacion: CASA }).expect(201);
+      expect((await api('delete', '/usuarios/me', 'borrar', { password: 'mal' }).expect(403)).body.error).toBe('PASSWORD_INCORRECTA');
+      await api('delete', '/usuarios/me', 'borrar', { password: PASS }).expect(204);
+
+      await api('get', '/auth/me', 'borrar').expect(401);
+      await login('borrar@prueba.test').expect(401);
+      const lista = (await api('get', '/soporte/usuarios?q=borrar', 'soporte').expect(200)).body;
+      expect(lista.meta.total).toBe(0);
+      const ficha = (await api('get', `/soporte/usuarios/${id.borrar}`, 'soporte').expect(200)).body;
+      expect(ficha).toMatchObject({ estado: 'eliminado', nombre: 'Usuario eliminado', telefono: null });
+      expect(ficha.email).not.toContain('borrar@');
+      const [{ n }] = await ds.query(`SELECT count(*)::int AS n FROM direcciones WHERE cliente_id = $1`, [id.borrar]);
+      expect(n).toBe(0);
+      // El correo queda libre para registrarse de nuevo.
+      await registrar('borrar', 'cliente');
     });
   });
 

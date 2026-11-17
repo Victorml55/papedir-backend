@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: PaPedir API
-  version: 1.0.0
+  version: 1.1.0
   description: |
     Contrato de la API de PaPedir, plataforma de reparto a domicilio en Celaya, Gto.
 
@@ -77,6 +77,9 @@ paths:
         Los roles `soporte` y `admin` no se registran aquí; los crea un admin desde la web.
         Si `rol = tienda`, el campo `tienda` es obligatorio.
         Tiendas y repartidores nacen con `estado = pendiente_aprobacion` hasta que soporte los aprueba.
+        `aceptoTerminos` debe ser `true` (la app muestra antes el aviso de privacidad y los términos, ver `GET /legal`).
+        Al registrarse se envía al correo un código de 6 dígitos para verificarlo (`POST /auth/verificar-correo`).
+        Verificar el correo no es obligatorio para usar la app.
       security: []
       requestBody:
         required: true
@@ -110,6 +113,9 @@ paths:
         - web → rol soporte o admin
         Responde 403 si la cuenta está baneada. Una cuenta `pendiente_aprobacion` sí puede iniciar sesión;
         la app debe mostrar un aviso de cuenta en revisión.
+        Tras 5 contraseñas equivocadas seguidas la cuenta se bloquea 15 minutos: responde 403 `CUENTA_BLOQUEADA`
+        (también con la contraseña correcta). Se desbloquea sola, restableciendo la contraseña o desde soporte.
+        Si `usuario.terminosPendientes = true`, la app debe pedir aceptar los términos nuevos (`POST /usuarios/me/terminos`).
       security: []
       requestBody:
         required: true
@@ -169,6 +175,107 @@ paths:
       responses:
         '204': { description: Sesión cerrada }
 
+  /auth/logout-todos:
+    post:
+      operationId: logoutTodos
+      tags: [Auth]
+      summary: Cerrar sesión en todos los dispositivos
+      description: Invalida todos los refresh tokens del usuario. Los access tokens vigentes caducan solos en 15 min.
+      responses:
+        '204': { description: Sesiones cerradas }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/recuperar:
+    post:
+      operationId: solicitarRecuperacion
+      tags: [Auth]
+      summary: Pedir un código para restablecer la contraseña
+      description: |
+        Envía al correo un código de 6 dígitos que vence en 15 minutos. Siempre responde 204, exista o no
+        el correo, para no revelar qué correos están registrados. Máximo 3 códigos por hora por cuenta.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        '204': { description: 'Si el correo existe, se envió el código' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /auth/restablecer:
+    post:
+      operationId: restablecerPassword
+      tags: [Auth]
+      summary: Crear una contraseña nueva con el código del correo
+      description: |
+        Cambia la contraseña, desbloquea la cuenta, marca el correo como verificado y cierra todas las sesiones.
+        Después la app inicia sesión con la contraseña nueva. Cada código sirve una vez y deja de servir
+        tras 5 intentos equivocados (`CODIGO_INVALIDO`).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, codigo, password]
+              properties:
+                email: { type: string, format: email }
+                codigo: { type: string, pattern: '^[0-9]{6}$', example: '482913' }
+                password: { type: string, minLength: 8 }
+      responses:
+        '204': { description: Contraseña cambiada }
+        '400':
+          description: Datos inválidos (`VALIDACION`) o código incorrecto, vencido o ya usado (`CODIGO_INVALIDO`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /auth/verificar-correo:
+    post:
+      operationId: verificarCorreo
+      tags: [Auth]
+      summary: Verificar el correo con el código recibido
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CodigoRequest' }
+      responses:
+        '200':
+          description: Correo verificado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Usuario' }
+        '400':
+          description: Código incorrecto o vencido (`CODIGO_INVALIDO`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /auth/verificar-correo/reenviar:
+    post:
+      operationId: reenviarVerificacion
+      tags: [Auth]
+      summary: Enviar otro código de verificación de correo
+      responses:
+        '204': { description: Código enviado }
+        '409':
+          description: El correo ya está verificado (`CORREO_YA_VERIFICADO`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: Ya se enviaron 3 códigos en la última hora (`DEMASIADAS_PETICIONES`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /auth/me:
     get:
       operationId: obtenerUsuarioActual
@@ -183,6 +290,20 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   # ─────────────────────────── USUARIOS ───────────────────────────
+  /legal:
+    get:
+      operationId: obtenerLegal
+      tags: [Usuarios]
+      summary: Versión vigente de los términos y ligas al aviso de privacidad
+      description: La app muestra estas ligas en el registro y en su menú de ajustes.
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Legal' }
+
   /usuarios/me:
     patch:
       operationId: actualizarMiPerfil
@@ -197,6 +318,10 @@ paths:
               properties:
                 nombre: { type: string, example: Ana López }
                 telefono: { type: string, example: '4611234567' }
+                fotoUrl:
+                  type: string
+                  nullable: true
+                  description: URL devuelta por `POST /uploads` con `tipo = perfil`; `null` quita la foto
       responses:
         '200':
           description: Perfil actualizado
@@ -204,6 +329,88 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Usuario' }
         '400': { $ref: '#/components/responses/ValidationError' }
+    delete:
+      operationId: eliminarMiCuenta
+      tags: [Usuarios]
+      summary: Eliminar mi cuenta
+      description: |
+        Requiere la contraseña. Borra los datos personales (nombre, correo, teléfono, foto, direcciones,
+        dispositivos) y cierra todas las sesiones; la tienda, si la hay, queda cerrada. Los pedidos se
+        conservan para contabilidad, sin datos personales. El correo queda libre para registrarse de nuevo.
+        No se puede si hay pedidos en curso (`TIENE_PEDIDOS_ACTIVOS`) ni si es la única cuenta de admin (`ULTIMO_ADMIN`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConfirmarPasswordRequest' }
+      responses:
+        '204': { description: Cuenta eliminada }
+        '403':
+          description: Contraseña incorrecta (`PASSWORD_INCORRECTA`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Tiene pedidos en curso o es el último admin
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /usuarios/me/password:
+    put:
+      operationId: cambiarPassword
+      tags: [Usuarios]
+      summary: Cambiar mi contraseña
+      description: Cierra las demás sesiones y devuelve tokens nuevos para este dispositivo.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [actual, nueva]
+              properties:
+                actual: { type: string }
+                nueva: { type: string, minLength: 8, description: Debe ser distinta de la actual }
+      responses:
+        '200':
+          description: Contraseña cambiada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tokens' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403':
+          description: La contraseña actual es incorrecta (`PASSWORD_INCORRECTA`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /usuarios/me/terminos:
+    post:
+      operationId: aceptarTerminos
+      tags: [Usuarios]
+      summary: Aceptar la versión vigente de los términos
+      description: Se usa cuando `terminosPendientes = true`. `version` debe ser la de `GET /legal`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                version: { type: string, example: '2026-11' }
+      responses:
+        '200':
+          description: Aceptados
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Usuario' }
+        '409':
+          description: La versión no es la vigente (`VERSION_TERMINOS`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /usuarios/me/dispositivo:
     put:
@@ -979,7 +1186,7 @@ paths:
       summary: Subir una imagen y obtener su URL
       description: |
         JPG, PNG o WebP de hasta 5 MB. El backend la guarda en Supabase Storage y devuelve la URL
-        pública para usarla en `imagenUrl` o `evidenciaUrl`. Las apps nunca hablan con Supabase.
+        pública para usarla en `imagenUrl`, `evidenciaUrl` o `fotoUrl`. Las apps nunca hablan con Supabase.
       requestBody:
         required: true
         content:
@@ -991,7 +1198,7 @@ paths:
                 archivo: { type: string, format: binary }
                 tipo:
                   type: string
-                  enum: [producto, tienda, evidencia]
+                  enum: [producto, tienda, evidencia, perfil]
       responses:
         '201':
           description: Subida
@@ -1250,6 +1457,7 @@ paths:
       operationId: listarSoporteUsuarios
       tags: [Soporte]
       summary: Buscar usuarios, tiendas y repartidores
+      description: Las cuentas eliminadas solo aparecen si se filtra `estado = eliminado`.
       parameters:
         - name: rol
           in: query
@@ -1274,6 +1482,57 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/Usuario' }
                   meta: { $ref: '#/components/schemas/PaginaMeta' }
+
+  /soporte/usuarios/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: obtenerSoporteUsuario
+      tags: [Soporte]
+      summary: Ficha completa de una cuenta
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UsuarioDetalle' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /soporte/usuarios/{id}/eventos:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: listarEventosCuenta
+      tags: [Soporte]
+      summary: Bitácora de la cuenta (registro, aprobación, baneos, bloqueos, cambios de contraseña…)
+      description: Los 200 eventos más recientes, del más nuevo al más viejo.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/EventoCuenta' }
+
+  /soporte/usuarios/{id}/desbloquear:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: desbloquearUsuario
+      tags: [Soporte]
+      summary: Quitar el bloqueo por intentos fallidos de login
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UsuarioDetalle' }
+        '409':
+          description: La cuenta no está bloqueada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /soporte/usuarios/{id}/aprobar:
     parameters:
@@ -1464,7 +1723,9 @@ components:
             NO_ENCONTRADO, EMAIL_REGISTRADO, TRANSICION_INVALIDA, FUERA_DE_RANGO, FUERA_DE_COBERTURA,
             TIENDA_CERRADA, PRODUCTO_AGOTADO, PEDIDO_MINIMO, PEDIDO_MAXIMO_EFECTIVO, PEDIDO_YA_TOMADO,
             VIAJE_LLENO, NO_ENCADENABLE, VIAJE_ACTIVO, CODIGO_INCORRECTO, TICKET_DUPLICADO, CALIFICACION_INVALIDA,
-            REPARTIDOR_DESCONECTADO, CATEGORIA_CON_PRODUCTOS, TICKET_CERRADO, DEMASIADAS_PETICIONES, ERROR_INTERNO
+            REPARTIDOR_DESCONECTADO, CATEGORIA_CON_PRODUCTOS, TICKET_CERRADO, DEMASIADAS_PETICIONES, ERROR_INTERNO,
+            CUENTA_BLOQUEADA, CODIGO_INVALIDO, PASSWORD_INCORRECTA, CORREO_YA_VERIFICADO, VERSION_TERMINOS,
+            TIENE_PEDIDOS_ACTIVOS, ULTIMO_ADMIN
           example: PEDIDO_YA_TOMADO
         message: { type: string, example: El pedido ya fue tomado por otro repartidor }
         detalles:
@@ -1534,8 +1795,10 @@ components:
 
     EstadoCuenta:
       type: string
-      description: Tiendas y repartidores nacen en pendiente_aprobacion; clientes en activo.
-      enum: [pendiente_aprobacion, activo, baneado]
+      description: |
+        Tiendas y repartidores nacen en pendiente_aprobacion; clientes en activo.
+        `eliminado` = el usuario borró su cuenta (solo lo ve soporte).
+      enum: [pendiente_aprobacion, activo, baneado, eliminado]
 
     MetodoPago:
       type: string
@@ -1560,7 +1823,72 @@ components:
         telefono: { type: string, nullable: true, example: '4611234567' }
         rol: { $ref: '#/components/schemas/Rol' }
         estado: { $ref: '#/components/schemas/EstadoCuenta' }
+        fotoUrl: { type: string, nullable: true }
+        emailVerificado: { type: boolean }
+        terminosPendientes:
+          type: boolean
+          description: true si no ha aceptado la versión vigente de los términos; la app debe pedirlo
         creadoEn: { type: string, format: date-time }
+
+    UsuarioDetalle:
+      allOf:
+        - $ref: '#/components/schemas/Usuario'
+        - type: object
+          properties:
+            motivoBaneo: { type: string, nullable: true }
+            bloqueadoHasta:
+              type: string
+              format: date-time
+              nullable: true
+              description: Fin del bloqueo por intentos fallidos; null si no está bloqueada
+            eliminadoEn: { type: string, format: date-time, nullable: true }
+            terminosVersion: { type: string, nullable: true }
+            terminosAceptadosEn: { type: string, format: date-time, nullable: true }
+            tiendas:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  nombre: { type: string }
+                  abierta: { type: boolean }
+
+    EventoCuenta:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        tipo:
+          type: string
+          description: |
+            registrada, creada_por_admin, aprobada, baneada, desbaneada, bloqueada, desbloqueada,
+            password_cambiada, password_restablecida, correo_verificado, terminos_aceptados, eliminada
+          example: bloqueada
+        actorId: { type: string, format: uuid, nullable: true, description: Quién lo hizo; null si fue el sistema }
+        actorRol:
+          type: string
+          nullable: true
+          enum: [cliente, tienda, repartidor, soporte, admin, null]
+        detalle: { type: string, nullable: true }
+        creadoEn: { type: string, format: date-time }
+
+    Legal:
+      type: object
+      properties:
+        version: { type: string, example: '2026-11' }
+        avisoPrivacidadUrl: { type: string, example: 'https://papedir-frontend.vercel.app/privacidad' }
+        terminosUrl: { type: string, example: 'https://papedir-frontend.vercel.app/terminos' }
+
+    CodigoRequest:
+      type: object
+      required: [codigo]
+      properties:
+        codigo: { type: string, pattern: '^[0-9]{6}$', example: '482913' }
+
+    ConfirmarPasswordRequest:
+      type: object
+      required: [password]
+      properties:
+        password: { type: string }
 
     Tokens:
       type: object
@@ -1577,7 +1905,7 @@ components:
 
     RegisterRequest:
       type: object
-      required: [nombre, email, password, telefono, rol]
+      required: [nombre, email, password, telefono, rol, aceptoTerminos]
       properties:
         nombre: { type: string, example: Ana López }
         email: { type: string, format: email, example: ana@correo.com }
@@ -1586,6 +1914,10 @@ components:
         rol:
           type: string
           enum: [cliente, tienda, repartidor]
+        aceptoTerminos:
+          type: boolean
+          enum: [true]
+          description: El usuario aceptó el aviso de privacidad y los términos vigentes
         tienda:
           type: object
           description: Obligatorio si rol = tienda

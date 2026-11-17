@@ -28,11 +28,23 @@ export const REGLAS = {
     geocercaM: 150,
   },
   ticket: { horasCierreAutomatico: 48 },
+  cuenta: {
+    maxIntentosLogin: 5, // contraseñas equivocadas seguidas antes de bloquear
+    minutosBloqueo: 15,
+    minutosCodigo: 15, // vigencia de los códigos de recuperación y verificación
+    intentosPorCodigo: 5,
+    codigosPorHora: 3, // máximo de correos con código por usuario y propósito
+  },
+  legal: {
+    // Al cambiar el aviso de privacidad o los términos, sube esta versión:
+    // la API marcará terminosPendientes = true hasta que cada usuario acepte la nueva.
+    versionTerminos: '2026-11',
+  },
   upload: { maxBytes: 5 * 1024 * 1024, mimes: ['image/jpeg', 'image/png', 'image/webp'] },
 } as const;
 
 export type Rol = 'cliente' | 'tienda' | 'repartidor' | 'soporte' | 'admin';
-export type EstadoCuenta = 'pendiente_aprobacion' | 'activo' | 'baneado';
+export type EstadoCuenta = 'pendiente_aprobacion' | 'activo' | 'baneado' | 'eliminado';
 export type EstadoPedido =
   | 'creado'
   | 'aceptado_tienda'

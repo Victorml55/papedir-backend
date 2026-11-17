@@ -2,11 +2,13 @@ import { Global, Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ENTIDADES } from '../database/entities';
+import { BitacoraCuentasService } from './bitacora-cuentas.service';
+import { CorreoService } from './correo.service';
 import { EnvioService } from './envio.service';
 import { PushService } from './push.service';
 import { RealtimeService } from './realtime.service';
 
-/** Servicios compartidos por todos los módulos: repositorios, JWT, tiempo real, push y cálculo de envío. */
+/** Servicios compartidos por todos los módulos: repositorios, JWT, tiempo real, push, correo, bitácora de cuentas y cálculo de envío. */
 @Global()
 @Module({
   imports: [
@@ -18,7 +20,7 @@ import { RealtimeService } from './realtime.service';
       }),
     }),
   ],
-  providers: [RealtimeService, PushService, EnvioService],
-  exports: [TypeOrmModule, JwtModule, RealtimeService, PushService, EnvioService],
+  providers: [RealtimeService, PushService, EnvioService, CorreoService, BitacoraCuentasService],
+  exports: [TypeOrmModule, JwtModule, RealtimeService, PushService, EnvioService, CorreoService, BitacoraCuentasService],
 })
 export class NucleoModule {}

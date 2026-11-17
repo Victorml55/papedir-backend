@@ -155,3 +155,11 @@ DATABASE_URL="<transaction pooler>" DATABASE_SSL=true npm run verificar
    ```
 
 El JSON de la cuenta de servicio es una llave: no lo subas al repositorio ni lo mandes por el grupo; bórralo después de convertirlo.
+
+### 5. Resend (correos con códigos)
+
+La API manda por correo los códigos para verificar el correo y para recuperar la contraseña. Sin configurar, la API funciona igual y los códigos solo aparecen en el log de Render.
+
+1. Crea una cuenta en [resend.com](https://resend.com) y en **API Keys** genera una llave con permiso *Sending access*.
+2. En Render agrega `RESEND_API_KEY` con esa llave y revisa con `npm run verificar`.
+3. Con el remitente de prueba `onboarding@resend.dev`, Resend **solo entrega al correo con el que creaste la cuenta**. Sirve para probar; para que le llegue a cualquier usuario, verifica un dominio propio en **Domains** y cambia `CORREO_REMITENTE` a `PaPedir <no-responder@tu-dominio>`.

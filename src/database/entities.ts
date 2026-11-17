@@ -25,6 +25,38 @@ export class Usuario {
   @Column({ type: 'double precision', nullable: true }) lat: number | null;
   @Column({ type: 'double precision', nullable: true }) lng: number | null;
   @Column({ ...fecha, nullable: true }) ubicacionEn: Date | null;
+  @Column({ type: 'text', nullable: true }) fotoUrl: string | null;
+  @Column({ ...fecha, nullable: true }) emailVerificadoEn: Date | null;
+  @Column({ type: 'text', nullable: true }) terminosVersion: string | null;
+  @Column({ ...fecha, nullable: true }) terminosAceptadosEn: Date | null;
+  @Column({ type: 'int', default: 0 }) intentosFallidos: number;
+  @Column({ ...fecha, nullable: true }) bloqueadoHasta: Date | null;
+  @Column({ ...fecha, nullable: true }) eliminadoEn: Date | null;
+  @CreateDateColumn(fecha) creadoEn: Date;
+}
+
+/** Códigos de 6 dígitos enviados por correo (recuperar contraseña, verificar correo). Solo se guarda el hash. */
+@Entity('codigos_verificacion')
+export class CodigoVerificacion {
+  @PrimaryGeneratedColumn('uuid') id: string;
+  @Column('uuid') usuarioId: string;
+  @Column({ type: 'text' }) proposito: 'recuperar_password' | 'verificar_email';
+  @Column() codigoHash: string;
+  @Column(fecha) expiraEn: Date;
+  @Column({ type: 'int', default: 0 }) intentos: number;
+  @Column({ ...fecha, nullable: true }) usadoEn: Date | null;
+  @CreateDateColumn(fecha) creadoEn: Date;
+}
+
+/** Bitácora de cuentas: registro, aprobación, baneo, cambios de contraseña, eliminación... */
+@Entity('eventos_cuenta')
+export class EventoCuenta {
+  @PrimaryGeneratedColumn('uuid') id: string;
+  @Column('uuid') usuarioId: string;
+  @Column() tipo: string;
+  @Column({ type: 'uuid', nullable: true }) actorId: string | null;
+  @Column({ type: 'text', nullable: true }) actorRol: Rol | null;
+  @Column({ type: 'text', nullable: true }) detalle: string | null;
   @CreateDateColumn(fecha) creadoEn: Date;
 }
 
@@ -203,6 +235,6 @@ export class Mensaje {
 }
 
 export const ENTIDADES = [
-  Usuario, RefreshToken, Dispositivo, Direccion, Tienda, CategoriaProducto, Producto, Viaje, Pedido, PedidoItem,
+  Usuario, CodigoVerificacion, EventoCuenta, RefreshToken, Dispositivo, Direccion, Tienda, CategoriaProducto, Producto, Viaje, Pedido, PedidoItem,
   EventoPedido, Calificacion, Ticket, Mensaje,
 ];
