@@ -1,3 +1,4 @@
+import { MotivoCancelacionDto } from '../pedidos/pedidos.dto';
 import { Body, Controller, Get, HttpCode, Param, Patch, Post, Query } from '@nestjs/common';
 import { Actor, Roles } from '../common/auth';
 import { MotivoDto } from '../common/dtos';
@@ -16,7 +17,7 @@ export class SoporteController {
   pedidos(@Actor() u: Usuario, @Query() q: BuscarPedidosDto) { return this.svc.buscarPedidos(u, q); }
 
   @Post('pedidos/:id/cancelar') @HttpCode(200)
-  cancelar(@Actor() u: Usuario, @Param('id', UuidPipe) id: string, @Body() dto: MotivoDto) { return this.svc.cancelar(u, id, dto.motivo); }
+  cancelar(@Actor() u: Usuario, @Param('id', UuidPipe) id: string, @Body() dto: MotivoCancelacionDto) { return this.svc.cancelar(u, id, dto); }
 
   @Post('pedidos/:id/completar') @HttpCode(200)
   completar(@Actor() u: Usuario, @Param('id', UuidPipe) id: string, @Body() dto: MotivoDto) { return this.svc.completar(u, id, dto.motivo); }

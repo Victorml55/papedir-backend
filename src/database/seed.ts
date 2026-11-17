@@ -69,7 +69,8 @@ async function main() {
   const ds = app.get(DataSource);
 
   if (reset) {
-    await ds.query(`TRUNCATE mensajes, tickets, calificaciones, eventos_pedido, pedido_items, pedidos, viajes, opciones,
+    await ds.query(`TRUNCATE movimientos, liquidaciones, configuracion, zonas, mensajes_pedido, notificaciones, favoritos,
+      cupones, mensajes, tickets, calificaciones, eventos_pedido, pedido_items, pedidos, viajes, opciones,
       grupos_opciones, productos, categorias_producto, horarios_tienda, tiendas, direcciones, dispositivos, refresh_tokens,
       codigos_verificacion, eventos_cuenta, documentos, vehiculos, usuarios
       RESTART IDENTITY CASCADE`);

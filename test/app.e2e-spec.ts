@@ -413,7 +413,7 @@ describe('PaPedir API', () => {
       const t = (await api('post', '/tickets', 'cliente', { pedidoId: id.pedido, asunto: 'Faltó un taco', descripcion: 'Llegaron 9' }).expect(201)).body;
       expect(t.folio).toMatch(/^T-\d{6}$/);
       expect((await api('post', '/tickets', 'cliente', { pedidoId: id.pedido, asunto: 'Otra vez', descripcion: '...' }).expect(409)).body.error).toBe('TICKET_DUPLICADO');
-      await api('post', '/tickets', 'rep2', { pedidoId: id.pedido, asunto: 'No es mío', descripcion: '...' }).expect(403);
+      await api('post', '/tickets', id.otro, { pedidoId: id.pedido, asunto: 'No es mío', descripcion: '...' }).expect(403); // el repartidor que no ganó el pedido
       await api('get', `/tickets/${t.id}`, 'tienda').expect(403);
 
       expect((await api('patch', `/soporte/tickets/${t.id}`, 'soporte', { asignarmelo: true }).expect(200)).body.estado).toBe('en_atencion');
@@ -449,7 +449,7 @@ describe('PaPedir API', () => {
       const cuerpo = { tiendaId: id.tiendaId, direccionId: id.casa, items: [{ productoId: id.pastor, cantidad: 1 }] };
       const viejo = (await api('post', '/pedidos', 'cliente', cuerpo).expect(201)).body.id;
       const reciente = (await api('post', '/pedidos', 'cliente', cuerpo).expect(201)).body.id;
-      await ds.query(`UPDATE pedidos SET creado_en = now() - interval '6 minutes' WHERE id = $1`, [viejo]);
+      await ds.query(`UPDATE pedidos SET creado_en = now() - interval '6 minutes', enviado_a_tienda_en = now() - interval '6 minutes' WHERE id = $1`, [viejo]);
 
       expect(await app.get(TareasService).cancelarSinRespuesta()).toBe(1);
       expect((await api('get', `/pedidos/${viejo}`, 'cliente')).body.estado).toBe('cancelado');
@@ -857,6 +857,291 @@ describe('PaPedir API', () => {
       expect((await api('post', '/tiendas/mias', 'tiendaNueva', { nombre: 'Otra', categoria: 'comida', direccion: 'Y', ubicacion: TIENDA }).expect(409)).body.error).toBe('CUENTA_PENDIENTE');
       const ficha = (await api('get', `/soporte/usuarios/${id.tienda}`, 'soporte')).body;
       expect(ficha.tiendas).toHaveLength(2);
+    });
+  });
+
+  describe('Fase 3: cliente y negocio', () => {
+    const carrito = (extra: any = {}, items: any[] = [{ productoId: id.pastor, cantidad: 2, opciones: [id.verde] }]) =>
+      ({ tiendaId: id.tiendaId, direccionId: id.casa, items, ...extra });
+    const cotizar = (extra: any = {}, items?: any[]) => api('post', '/pedidos/cotizar', 'cliente', carrito(extra, items));
+    const crear = async (extra: any = {}, items?: any[]) => (await api('post', '/pedidos', 'cliente', carrito(extra, items)).expect(201)).body;
+    const cancelar = (pedidoId: string) => api('post', `/pedidos/${pedidoId}/cancelar`, 'cliente', { codigo: 'cambio_de_opinion' }).expect(200);
+    const sql = async (q: string, params: any[] = []) => (await ds.query(q, params))[0];
+
+    it('catálogo de motivos: cancelar con código o texto queda registrado', async () => {
+      const cat = (await api('get', '/catalogos/motivos-cancelacion').expect(200)).body;
+      expect(cat.cliente.map((m) => m.codigo)).toContain('cambio_de_opinion');
+      expect(cat.tienda.map((m) => m.codigo)).toContain('sin_ingredientes');
+
+      const p = await crear();
+      await api('post', `/pedidos/${p.id}/cancelar`, 'cliente', {}).expect(400);
+      await api('post', `/pedidos/${p.id}/cancelar`, 'cliente', { codigo: 'sin_ingredientes' }).expect(400); // es de tienda
+      expect((await cancelar(p.id)).body.motivoCancelacion).toBe('cambio_de_opinion');
+      const ultimo = (await api('get', `/pedidos/${p.id}/eventos`, 'cliente')).body.at(-1);
+      expect(ultimo).toMatchObject({ tipo: 'cancelado', detalle: 'Cambié de opinión' });
+
+      const r = await crear();
+      await api('post', `/pedidos/${r.id}/rechazar`, 'tienda', { codigo: 'sin_ingredientes', motivo: 'Sin piña' }).expect(200);
+      expect((await api('get', `/pedidos/${r.id}/eventos`, 'tienda')).body.at(-1).detalle).toBe('Sin piña');
+      const c = (await api('get', '/admin/cancelaciones', 'soporte').expect(200)).body;
+      expect(c.motivos).toEqual(expect.arrayContaining([
+        expect.objectContaining({ codigo: 'cambio_de_opinion', texto: 'Cambié de opinión' }),
+        expect.objectContaining({ codigo: 'sin_ingredientes', rechazados: 1 }),
+      ]));
+    });
+
+    it('cupones de PaPedir y de tienda, con propina', async () => {
+      await api('post', '/admin/cupones', 'tienda', { codigo: 'NOPE1', tipo: 'monto', valor: 10 }).expect(403);
+      const plataforma = (await api('post', '/admin/cupones', 'admin', { codigo: 'bienvenida', tipo: 'monto', valor: 30, minimoCompra: 100, descripcion: '$30 de regalo' }).expect(201)).body;
+      expect(plataforma).toMatchObject({ codigo: 'BIENVENIDA', tiendaId: null, usos: 0 });
+      expect((await api('post', '/admin/cupones', 'admin', { codigo: 'BIENVENIDA', tipo: 'envio_gratis' }).expect(409)).body.error).toBe('CUPON_DUPLICADO');
+      await api('post', '/admin/cupones', 'admin', { codigo: 'MUCHO', tipo: 'porcentaje', valor: 150 }).expect(400);
+
+      const q = (await cotizar({ cupon: 'bienvenida', propina: 20 }).expect(200)).body;
+      expect(q).toMatchObject({ subtotal: 170, costoEnvio: 46, descuento: 30, propina: 20, total: 206, cupon: { codigo: 'BIENVENIDA', descripcion: '$30 de regalo' } });
+      expect((await cotizar({ cupon: 'NOEXISTE' }).expect(409)).body.error).toBe('CUPON_INVALIDO');
+      expect((await cotizar({ cupon: 'BIENVENIDA' }, [{ productoId: id.pastor, cantidad: 1, opciones: [id.verde] }]).expect(409)).body.message).toContain('compra mínima');
+      await cotizar({ propina: 600 }).expect(400);
+
+      await api('post', '/tiendas/mia/cupones', 'tienda', { codigo: 'GRATIS', tipo: 'envio_gratis' }).expect(400);
+      const propio = (await api('post', '/tiendas/mia/cupones', 'tienda', { codigo: 'TACO10', tipo: 'porcentaje', valor: 10, usosPorCliente: 5 }).expect(201)).body;
+      expect(propio.tiendaId).toBe(id.tiendaId);
+      expect((await cotizar({ cupon: 'TACO10' }).expect(200)).body.descuento).toBe(17);
+      expect((await api('get', '/tiendas/mia/cupones', 'tienda')).body.map((c) => c.codigo)).toEqual(['TACO10']);
+
+      const p = await crear({ cupon: 'BIENVENIDA' });
+      expect(p).toMatchObject({ descuento: 30, total: 186, montoAPagarTienda: 170 });
+      expect((await cotizar({ cupon: 'BIENVENIDA' }).expect(409)).body.message).toBe('Ya usaste este cupón');
+      await cancelar(p.id);
+      await cotizar({ cupon: 'BIENVENIDA' }).expect(200); // al cancelar se libera
+      id.cuponPlataforma = plataforma.id;
+    });
+
+    it('chat con el repartidor, comisiones y saldos al entregar', async () => {
+      const p = await crear({ cupon: 'TACO10', propina: 20 });
+      expect(p).toMatchObject({ subtotal: 170, descuento: 17, propina: 20, total: 219, montoAPagarTienda: 153, comisionTienda: null });
+      await api('post', `/pedidos/${p.id}/aceptar`, 'tienda').expect(200);
+      await api('post', `/pedidos/${p.id}/listo`, 'tienda').expect(200);
+      await api('put', '/repartidor/ubicacion', 'rep1', CERCA_DE_TIENDA).expect(204);
+      await api('patch', '/repartidor/disponibilidad', 'rep1', { disponible: true }).expect(200);
+      const viaje = (await api('post', `/repartidor/pedidos/${p.id}/tomar`, 'rep1').expect(200)).body;
+      expect(viaje).toMatchObject({ efectivoAPagarTiendas: 153, efectivoACobrar: 219, propinas: 20 });
+
+      // Chat
+      expect((await api('post', `/pedidos/${p.id}/mensajes`, 'cliente', { texto: 'Toca el timbre azul' }).expect(201)).body.autorRol).toBe('cliente');
+      await api('post', `/pedidos/${p.id}/mensajes`, 'rep1', { texto: 'Voy en camino' }).expect(201);
+      await api('get', `/pedidos/${p.id}/mensajes`, 'rep2').expect(403);
+      await api('get', `/pedidos/${p.id}/mensajes`, 'tienda').expect(403);
+      expect((await api('get', `/pedidos/${p.id}/mensajes`, 'soporte').expect(200)).body.map((m) => m.texto)).toEqual(['Toca el timbre azul', 'Voy en camino']);
+
+      const marca = (accion: string, ubicacion: any) => api('post', `/repartidor/pedidos/${p.id}/${accion}`, 'rep1', { ubicacion });
+      await marca('llegada-tienda', CERCA_DE_TIENDA).expect(200);
+      await marca('salida-tienda', CERCA_DE_TIENDA).expect(200);
+      await marca('llegada-cliente', CASA).expect(200);
+      await api('post', `/repartidor/pedidos/${p.id}/entregado`, 'rep1', { ubicacion: CASA, codigoEntrega: p.codigoEntrega }).expect(200);
+      expect((await api('post', `/pedidos/${p.id}/mensajes`, 'cliente', { texto: 'Gracias' }).expect(409)).body.error).toBe('CHAT_CERRADO');
+      id.entregadoF3 = p.id;
+
+      // Comisiones: 10 % de lo que cobra la tienda (153) y 10 % del envío (46).
+      expect((await api('get', `/pedidos/${p.id}`, 'tienda')).body.comisionTienda).toBe(15.3);
+      expect((await api('get', `/pedidos/${p.id}`, 'cliente')).body.comisionTienda).toBeNull();
+      const tiendaSaldo = (await api('get', '/saldo', 'tienda').expect(200)).body;
+      const esperadoTienda = await sql(`SELECT sum(comision_tienda)::float8 AS s FROM pedidos p JOIN tiendas t ON t.id = p.tienda_id WHERE t.owner_id = $1`, [id.tienda]);
+      expect(tiendaSaldo).toMatchObject({ saldo: esperadoTienda.s, aFavorDe: 'plataforma' });
+      expect(tiendaSaldo.movimientos.data[0]).toMatchObject({ tipo: 'comision_tienda', monto: 15.3, pedidoId: p.id });
+      await api('get', '/saldo', 'cliente').expect(403);
+
+      // Cupón de PaPedir: el repartidor cobra de menos y la plataforma se lo abona.
+      const conCupon = await crear({ cupon: 'BIENVENIDA' });
+      await api('post', `/pedidos/${conCupon.id}/aceptar`, 'tienda').expect(200);
+      await api('post', `/pedidos/${conCupon.id}/listo`, 'tienda').expect(200);
+      await api('post', `/repartidor/pedidos/${conCupon.id}/tomar`, 'rep1').expect(200);
+      await api('post', `/soporte/pedidos/${conCupon.id}/completar`, 'soporte', { motivo: 'Entregado sin marcar' }).expect(200);
+      const rep = (await api('get', '/saldo', 'rep1')).body;
+      expect(rep.movimientos.data.find((x) => x.pedidoId === conCupon.id && x.tipo === 'descuento_plataforma').monto).toBe(-30);
+      const esperadoRep = await sql(
+        `SELECT coalesce(sum(comision_envio), 0) - coalesce(sum(descuento) FILTER (WHERE descuento_absorbe = 'plataforma'), 0) AS s FROM pedidos WHERE repartidor_id = $1 AND estado = 'entregado'`,
+        [id.rep1],
+      );
+      expect(rep.saldo).toBeCloseTo(Number(esperadoRep.s), 2);
+
+      const g = (await api('get', '/repartidor/ganancias', 'rep1')).body.resumen;
+      expect(g.propinas).toBeGreaterThanOrEqual(20);
+      expect(g.reembolsoCupones).toBe(30);
+      expect(g.gananciaNeta).toBeCloseTo(g.gananciaEnvio + g.propinas - g.comisionPlataforma + g.reembolsoCupones, 2);
+      const r = (await api('get', '/tiendas/mia/reporte', 'tienda')).body.resumen;
+      expect(r.descuentosCupones).toBe(17);
+      expect(r.ventasNetas).toBeCloseTo(r.ventas - r.comisionPlataforma, 2);
+    });
+
+    it('admin ve saldos y registra liquidaciones', async () => {
+      const antes = (await api('get', '/admin/saldos', 'admin').expect(200)).body;
+      const tienda = antes.usuarios.find((u) => u.id === id.tienda);
+      expect(tienda.saldo).toBeGreaterThan(0);
+      expect(antes.totalPorCobrar).toBeGreaterThanOrEqual(tienda.saldo);
+      await api('get', '/admin/saldos', 'soporte').expect(403);
+      await api('post', '/admin/liquidaciones', 'admin', { usuarioId: id.cliente, sentido: 'cobro', monto: 10, metodo: 'efectivo' }).expect(400);
+
+      const l = (await api('post', '/admin/liquidaciones', 'admin', { usuarioId: id.tienda, sentido: 'cobro', monto: tienda.saldo, metodo: 'transferencia', referencia: 'SPEI 123' }).expect(201)).body;
+      expect(l).toMatchObject({ sentido: 'cobro', saldo: 0 });
+      expect((await api('get', '/saldo', 'tienda')).body).toMatchObject({ saldo: 0, aFavorDe: null });
+      expect((await api('get', `/admin/liquidaciones?usuarioId=${id.tienda}`, 'admin')).body.data[0].referencia).toBe('SPEI 123');
+      expect((await api('get', '/admin/saldos?rol=tienda', 'admin')).body.usuarios.find((u) => u.id === id.tienda)).toBeUndefined();
+    });
+
+    it('configuración: comisiones y tarifas dinámicas sin redesplegar', async () => {
+      const c = (await api('get', '/admin/configuracion', 'admin').expect(200)).body;
+      expect(c).toMatchObject({ comisiones: { tiendaPct: 10, envioPct: 10 }, recargos: { lluvia: { activo: false } } });
+      await api('put', '/admin/configuracion/comisiones', 'soporte', { tiendaPct: 5, envioPct: 5 }).expect(403);
+      await api('put', '/admin/configuracion/comisiones', 'admin', { tiendaPct: 80, envioPct: 5 }).expect(400);
+      expect((await api('put', '/admin/configuracion/comisiones', 'admin', { tiendaPct: 12, envioPct: 8 }).expect(200)).body).toEqual({ tiendaPct: 12, envioPct: 8 });
+      expect((await api('put', `/admin/tiendas/${id.tiendaId}/comision`, 'admin', { comisionPct: 5 }).expect(200)).body).toMatchObject({ comisionPct: 5, general: 12 });
+
+      const recargos = (extra: any) => ({
+        nocturno: { activo: false, desde: '22:00', hasta: '06:00', monto: 10 }, lluvia: { activo: false, monto: 15 },
+        demanda: { activo: false, pedidosEsperando: 5, monto: 10 }, ...extra,
+      });
+      await api('put', '/admin/configuracion/recargos', 'admin', recargos({ nocturno: { activo: true, desde: '25:00', hasta: '06:00', monto: 10 } })).expect(400);
+      await api('put', '/admin/configuracion/recargos', 'admin', recargos({ lluvia: { activo: true, monto: 15 }, nocturno: { activo: true, desde: '00:00', hasta: '00:00', monto: 0 } })).expect(200);
+      let q = (await cotizar().expect(200)).body;
+      expect(q).toMatchObject({ costoEnvio: 61, recargos: [{ concepto: 'Lluvia', monto: 15 }] });
+      // Nocturno "todo el día" (desde 00:00 hasta 23:59) para probarlo a cualquier hora.
+      await api('put', '/admin/configuracion/recargos', 'admin', recargos({ nocturno: { activo: true, desde: '00:00', hasta: '23:59', monto: 10 } })).expect(200);
+      q = (await cotizar().expect(200)).body;
+      expect(q.recargos).toEqual([{ concepto: 'Horario nocturno', monto: 10 }]);
+      expect(q.costoEnvio).toBe(56);
+      await api('put', '/admin/configuracion/recargos', 'admin', recargos({})).expect(200);
+      expect((await cotizar().expect(200)).body.costoEnvio).toBe(46);
+    });
+
+    it('zonas de cobertura: fuera de las zonas activas no se entrega', async () => {
+      const cuadro = (c: any, d: number) => [mover(c, -d, -d), mover(c, -d, d), mover(c, d, d), mover(c, d, -d)];
+      await api('post', '/admin/zonas', 'admin', { nombre: 'Moño', puntos: [mover(CASA, -0.01, -0.01), mover(CASA, 0.01, 0.01), mover(CASA, -0.01, 0.01), mover(CASA, 0.01, -0.01)] }).expect(400);
+      const z = (await api('post', '/admin/zonas', 'admin', { nombre: 'Norte', recargo: 7, puntos: cuadro(CASA, 0.01) }).expect(201)).body;
+      expect(z.puntos).toHaveLength(4);
+      expect((await api('get', '/zonas', 'cliente').expect(200)).body.map((x) => x.nombre)).toEqual(['Norte']);
+
+      expect((await cotizar().expect(200)).body).toMatchObject({ costoEnvio: 53, recargos: [{ concepto: 'Zona Norte', monto: 7 }] });
+      const fuera = (await api('post', '/direcciones', 'cliente', { alias: 'Centro', texto: 'Centro', ubicacion: mover(TIENDA, 0.005) }).expect(201)).body.id;
+      const r = await api('post', '/pedidos/cotizar', 'cliente', { ...carrito(), direccionId: fuera }).expect(409);
+      expect(r.body).toMatchObject({ error: 'FUERA_DE_COBERTURA', message: 'Todavía no llegamos a esa zona' });
+
+      await api('patch', `/admin/zonas/${z.id}`, 'admin', { activa: false }).expect(200);
+      await api('post', '/pedidos/cotizar', 'cliente', { ...carrito(), direccionId: fuera }).expect(200); // sin zonas activas, todo el radio
+      await api('delete', `/admin/zonas/${z.id}`, 'admin').expect(204);
+      await api('delete', `/direcciones/${fuera}`, 'cliente').expect(204);
+    });
+
+    it('pedidos programados: llegan a la tienda con anticipación', async () => {
+      const en = (min: number) => new Date(Date.now() + min * 60000).toISOString();
+      expect((await cotizar({ programadoPara: en(10) }).expect(400)).body.detalles[0].campo).toBe('programadoPara');
+      await cotizar({ programadoPara: en(8 * 1440) }).expect(400);
+
+      const p = await crear({ programadoPara: en(120) });
+      expect(p.estado).toBe('programado');
+      expect(p.etaMin).toBeGreaterThanOrEqual(119);
+      await api('post', `/pedidos/${p.id}/aceptar`, 'tienda').expect(409);
+      expect((await api('get', '/pedidos?estado=programado', 'tienda')).body.data.map((x) => x.id)).toContain(p.id);
+
+      const tareas = app.get(TareasService);
+      expect(await tareas.liberarProgramados()).toBe(0); // todavía falta
+      await ds.query(`UPDATE pedidos SET programado_para = now() + interval '20 minutes' WHERE id = $1`, [p.id]);
+      expect(await tareas.liberarProgramados()).toBe(1);
+      const liberado = (await api('get', `/pedidos/${p.id}`, 'cliente')).body;
+      expect(liberado.estado).toBe('creado');
+      expect((await api('get', `/pedidos/${p.id}/eventos`, 'cliente')).body.at(-1)).toMatchObject({ tipo: 'enviado_a_tienda', usuarioId: null });
+      expect(await tareas.cancelarSinRespuesta()).toBe(0); // los 5 minutos cuentan desde que llegó a la tienda
+      await cancelar(p.id);
+
+      // Si la tienda no abrió para el programado, se cancela solo.
+      const q = await crear({ programadoPara: en(120) });
+      await api('patch', '/tiendas/mia', 'tienda', { abierta: false }).expect(200);
+      await ds.query(`UPDATE pedidos SET programado_para = now() + interval '20 minutes' WHERE id = $1`, [q.id]);
+      await tareas.liberarProgramados();
+      expect((await api('get', `/pedidos/${q.id}`, 'cliente')).body).toMatchObject({ estado: 'cancelado', motivoCancelacion: 'tienda_cerrada' });
+      await api('patch', '/tiendas/mia', 'tienda', { abierta: true }).expect(200);
+    });
+
+    it('un carrito de dos tiendas crea dos pedidos juntos (o ninguno)', async () => {
+      const menu = (await api('get', `/tiendas/${id.sucursal}/menu`, 'cliente').expect(200)).body;
+      const pastorNorte = menu.flatMap((c) => c.productos).find((x) => x.nombre === 'Orden de pastor');
+      const verdeNorte = pastorNorte.grupos[0].opciones[0].id;
+      const pedidoNorte = { tiendaId: id.sucursal, items: [{ productoId: pastorNorte.id, cantidad: 1, opciones: [verdeNorte] }] };
+      const pedidoCentro = { tiendaId: id.tiendaId, items: [{ productoId: id.pastor, cantidad: 1, opciones: [id.verde] }], propina: 10 };
+
+      await api('post', '/pedidos/grupo', 'cliente', { direccionId: id.casa, pedidos: [pedidoCentro, pedidoCentro] }).expect(400);
+      const antes = (await sql(`SELECT count(*)::int AS n FROM pedidos`)).n;
+      await api('post', '/pedidos/grupo', 'cliente', { direccionId: id.casa, pedidos: [pedidoCentro, { ...pedidoNorte, items: [{ productoId: pastorNorte.id, cantidad: 1 }] }] }).expect(400);
+      expect((await sql(`SELECT count(*)::int AS n FROM pedidos`)).n).toBe(antes);
+
+      const g = (await api('post', '/pedidos/grupo', 'cliente', { direccionId: id.casa, pedidos: [pedidoCentro, pedidoNorte], notas: 'Juntos' }).expect(201)).body;
+      expect(g.pedidos).toHaveLength(2);
+      expect(new Set(g.pedidos.map((x) => x.grupoId))).toEqual(new Set([g.grupoId]));
+      expect(g.total).toBeCloseTo(g.pedidos[0].total + g.pedidos[1].total, 2);
+      expect(g.pedidos.map((x) => x.tienda.id).sort()).toEqual([id.tiendaId, id.sucursal].sort());
+      for (const x of g.pedidos) await cancelar(x.id);
+    });
+
+    it('repetir un pedido arma el carrito con el menú de hoy', async () => {
+      const r = (await api('post', `/pedidos/${id.entregadoF3}/repetir`, 'cliente').expect(200)).body;
+      expect(r).toMatchObject({ tienda: { id: id.tiendaId, abiertaAhora: true }, omitidos: [] });
+      expect(r.items).toEqual([expect.objectContaining({ productoId: id.pastor, cantidad: 2, opciones: [id.verde], precioUnitario: 85 })]);
+      await api('post', `/pedidos/${id.entregadoF3}/repetir`, 'tiendaNueva').expect(403);
+
+      const temporal = (await api('post', '/productos', 'tienda', { categoriaId: id.cat, nombre: 'Temporada', precio: 60 }).expect(201)).body.id;
+      const p = await crear({}, [{ productoId: temporal, cantidad: 1 }]);
+      await cancelar(p.id);
+      await api('delete', `/productos/${temporal}`, 'tienda').expect(204);
+      expect((await api('post', `/pedidos/${p.id}/repetir`, 'cliente').expect(200)).body).toMatchObject({
+        items: [], omitidos: [{ nombre: 'Temporada', motivo: 'Ya no está en el menú' }],
+      });
+    });
+
+    it('tiendas favoritas', async () => {
+      await api('put', `/favoritos/${id.tiendaId}`, 'cliente').expect(204);
+      await api('put', `/favoritos/${id.tiendaId}`, 'cliente').expect(204); // repetir no falla
+      await api('put', `/favoritos/${id.pedido}`, 'cliente').expect(404);
+      await api('put', `/favoritos/${id.tiendaId}`, 'tienda').expect(403);
+      expect((await api('get', '/favoritos', 'cliente').expect(200)).body).toEqual([expect.objectContaining({ id: id.tiendaId, abiertaAhora: true })]);
+      await api('delete', `/favoritos/${id.tiendaId}`, 'cliente').expect(204);
+      expect((await api('get', '/favoritos', 'cliente')).body).toEqual([]);
+    });
+
+    it('busca productos en las tiendas abiertas cercanas', async () => {
+      await api('get', '/productos/buscar?q=a', 'cliente').expect(400);
+      const r = (await api('get', `/productos/buscar?q=PASTOR&lat=${CASA.lat}&lng=${CASA.lng}`, 'cliente').expect(200)).body;
+      expect(r.data.map((x) => x.tienda.id).sort()).toEqual([id.tiendaId, id.sucursal].sort());
+      expect(r.data[0].tienda.distanciaKm).toBeLessThan(r.data[1].tienda.distanciaKm);
+      expect(r.data[0].producto).toMatchObject({ nombre: 'Orden de pastor', agotado: false });
+      await api('post', '/tiendas/mia/pausa', 'tienda', { minutos: 30 }).expect(200);
+      expect((await api('get', '/productos/buscar?q=pastor', 'cliente')).body.data.map((x) => x.tienda.id)).toEqual([id.sucursal]);
+      await api('delete', '/tiendas/mia/pausa', 'tienda').expect(200);
+    });
+
+    it('reseñas: la tienda responde y el cliente recibe la notificación', async () => {
+      const lista = (await api('get', `/tiendas/${id.tiendaId}/resenas`, 'cliente').expect(200)).body;
+      expect(lista.resumen).toMatchObject({ promedio: 5, total: 1, porEstrellas: { 5: 1, 1: 0 } });
+      expect(lista.data[0]).toMatchObject({ pedidoId: id.pedido, calificacion: 5, comentario: 'Rápido', cliente: 'Usuario c.', respuesta: null });
+
+      await api('post', `/pedidos/${id.pedido}/calificacion/respuesta`, 'tiendaNueva', { texto: 'x' }).expect(403);
+      await api('post', `/pedidos/${id.entregadoF3}/calificacion/respuesta`, 'tienda', { texto: 'x' }).expect(404); // sin reseña
+      await api('post', `/pedidos/${id.pedido}/calificacion/respuesta`, 'tienda', { texto: '¡Gracias por tu pedido!' }).expect(200);
+      expect((await api('get', `/tiendas/${id.tiendaId}/resenas`, 'cliente')).body.data[0].respuesta).toBe('¡Gracias por tu pedido!');
+    });
+
+    it('bandeja de notificaciones: no leídas, marcar una y todas', async () => {
+      const b = (await api('get', '/notificaciones', 'cliente').expect(200)).body;
+      expect(b.noLeidas).toBeGreaterThan(0);
+      const respuesta = b.data.find((n) => n.titulo === 'La tienda respondió tu reseña');
+      expect(respuesta).toMatchObject({ leida: false, datos: { pedidoId: id.pedido } });
+
+      await api('post', `/notificaciones/${respuesta.id}/leer`, 'tienda').expect(404); // no es suya
+      await api('post', `/notificaciones/${respuesta.id}/leer`, 'cliente').expect(204);
+      const despues = (await api('get', '/notificaciones?soloNoLeidas=true', 'cliente')).body;
+      expect(despues.noLeidas).toBe(b.noLeidas - 1);
+      expect(despues.data.map((n) => n.id)).not.toContain(respuesta.id);
+      await api('post', '/notificaciones/leer-todas', 'cliente').expect(204);
+      expect((await api('get', '/notificaciones', 'cliente')).body.noLeidas).toBe(0);
     });
   });
 

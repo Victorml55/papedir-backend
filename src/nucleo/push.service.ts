@@ -3,12 +3,13 @@ import { cert, getApps, initializeApp } from 'firebase-admin/app';
 import { getMessaging, Messaging } from 'firebase-admin/messaging';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
-import { Dispositivo, Usuario } from '../database/entities';
+import { Dispositivo, Notificacion, Usuario } from '../database/entities';
 import { Rol } from '../config/reglas';
+import { RealtimeService } from './realtime.service';
 
 /**
- * Notificaciones push con Firebase Cloud Messaging.
- * Sin FIREBASE_SERVICE_ACCOUNT_BASE64 solo escribe en el log (útil en desarrollo).
+ * Notificaciones: se guardan en la bandeja del usuario (tabla notificaciones, evento `notificacion:nueva`)
+ * y se mandan por push con Firebase Cloud Messaging. Sin FIREBASE_SERVICE_ACCOUNT_BASE64 el push solo va al log.
  * Nunca lanza errores: una notificación fallida no debe tumbar la operación.
  */
 @Injectable()
@@ -19,6 +20,8 @@ export class PushService {
   constructor(
     @InjectRepository(Dispositivo) private readonly dispositivos: Repository<Dispositivo>,
     @InjectRepository(Usuario) private readonly usuarios: Repository<Usuario>,
+    @InjectRepository(Notificacion) private readonly bandeja: Repository<Notificacion>,
+    private readonly rt: RealtimeService,
   ) {
     const b64 = process.env.FIREBASE_SERVICE_ACCOUNT_BASE64;
     if (!b64) return;
@@ -35,6 +38,19 @@ export class PushService {
   async aUsuarios(ids: (string | null | undefined)[], titulo: string, cuerpo: string, data: Record<string, string> = {}) {
     const usuarioIds = [...new Set(ids.filter(Boolean) as string[])];
     if (!usuarioIds.length) return;
+    try {
+      const guardadas = await this.bandeja.save(usuarioIds.map((usuarioId) => this.bandeja.create({ usuarioId, titulo, cuerpo, datos: data })));
+      for (const n of guardadas) {
+        this.rt.emitir([`usuario:${n.usuarioId}`], 'notificacion:nueva', { id: n.id, titulo, cuerpo, datos: data, creadoEn: n.creadoEn });
+      }
+    } catch (e) {
+      this.log.warn(`No se guardó la notificación: ${e.message}`);
+    }
+    // El push a Firebase va en segundo plano: quien espera esta función solo espera a que quede en la bandeja.
+    void this.enviarPush(usuarioIds, titulo, cuerpo, data);
+  }
+
+  private async enviarPush(usuarioIds: string[], titulo: string, cuerpo: string, data: Record<string, string>) {
     try {
       const filas = await this.dispositivos.findBy({ usuarioId: In(usuarioIds) });
       const tokens = filas.map((d) => d.fcmToken);

@@ -190,6 +190,8 @@ El campo `error` es un código estable; las apps deciden con él, no con el text
 | `TIENDA_CERRADA` | Tienda cerrada, en pausa o fuera de horario | Mostrar `message` y regresar al listado |
 | `DOCUMENTO_APROBADO` | Quiere reemplazar un documento ya aprobado | Aviso: pedirlo a soporte |
 | `LIMITE_SUCURSALES` | Ya tiene 10 sucursales | Aviso |
+| `CUPON_INVALIDO` | Cupón inexistente, vencido, agotado, ya usado o con compra mínima | Mostrar `message` junto al campo del cupón |
+| `CHAT_CERRADO` | Chat de un pedido que ya no está en camino | Deshabilitar el chat |
 
 La lista completa está en el schema `Error` de `openapi.yaml`. Todos los valores numéricos (montos, distancias, tiempos) están en la sección de reglas de negocio de la Definición del proyecto.
 
@@ -217,6 +219,25 @@ Cada producto del menú trae `grupos` (por ejemplo "Salsa: elige 1", "Extras: ha
 ### Repartidor (App Repartidor)
 
 Vehículo (`/repartidor/vehiculo`), documentos (`GET/POST /documentos`: INE y licencia obligatorias), ganancias y corte de efectivo del día (`/repartidor/ganancias`), y `etaMin` en cada parada del viaje.
+
+### Fase 3: cliente y negocio
+
+App Cliente (Omar):
+- Carrito: `cupon` y `propina` en cotizar/crear; la cotización devuelve `descuento`, `recargos` (lluvia, nocturno, zona…) y el `total` final.
+- Pedido programado: `programadoPara` (hora de entrega, de 45 min a 7 días). Nace en estado `programado` y pasa a `creado` solo.
+- Carrito de 2 o 3 tiendas: `POST /pedidos/grupo` crea un pedido por tienda unidos por `grupoId`.
+- `POST /pedidos/{id}/repetir`, favoritos (`/favoritos`), búsqueda de productos (`/productos/buscar`), reseñas (`/tiendas/{id}/resenas`).
+- Cancelar con motivo del catálogo: `GET /catalogos/motivos-cancelacion` y mandar `{ codigo }`.
+
+Las 3 apps:
+- Bandeja de notificaciones: `GET /notificaciones` (con `noLeidas`), marcar leídas. Todo push también queda ahí.
+- Chat del pedido entre cliente y repartidor: `GET/POST /pedidos/{id}/mensajes` mientras va en camino.
+
+App Tienda: cupones propios (`/tiendas/mia/cupones`), responder reseñas (`POST /pedidos/{id}/calificacion/respuesta`), rechazar con `{ codigo }`, y su saldo con PaPedir (`GET /saldo`). El `montoAPagarTienda` ya descuenta sus cupones.
+
+App Repartidor: `propina` en el pedido y el viaje, `gananciaNeta` en ganancias y su saldo (`GET /saldo`).
+
+Dinero (todo en efectivo): el repartidor cobra el `total`, paga `montoAPagarTienda` a la tienda y se queda con envío + propina. PaPedir lleva la cuenta: la tienda le debe su comisión, el repartidor la comisión del envío, y PaPedir le debe al repartidor los cupones de la plataforma. Admin registra los pagos en la web (liquidaciones).
 
 ### Estados del pedido
 
@@ -274,6 +295,8 @@ Los eventos que emiten las apps responden con un *ack*: `{ ok: true }` o `{ ok: 
 | `ticket:actualizado` | Creador del ticket | `{ ticketId, estado }` |
 | `cuenta:baneada` | El usuario baneado | `{ motivo }` → la app cierra sesión |
 | `cuenta:aprobada` | Tienda o repartidor aprobado | `{}` → la app quita el aviso de cuenta en revisión |
+| `notificacion:nueva` | El usuario | `{ id, titulo, cuerpo, datos, creadoEn }` → sumar 1 al globito de la campana |
+| `pedido:mensaje` | Cliente y repartidor del pedido | `MensajePedido` (chat del pedido) |
 
 ### Eventos que emiten las apps
 

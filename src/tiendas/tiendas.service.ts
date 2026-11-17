@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, Repository } from 'typeorm';
-import { pagina, RangoFechasDto, rangoFechas } from '../common/dtos';
+import { pagina, PaginaDto, RangoFechasDto, rangoFechas } from '../common/dtos';
 import { conflicto, invalido, noEncontrado } from '../common/errores';
 import { redondear } from '../common/util';
 import { REGLAS } from '../config/reglas';
@@ -133,6 +133,37 @@ export class TiendasService {
         productos: prods.filter((x) => x.categoriaId === c.id).map((x) => vistaProducto(x, grupos.get(x.id))),
       }))
       .filter((g) => g.productos.length);
+  }
+
+  /** Reseñas de una tienda, de la más nueva a la más vieja, con el resumen de calificaciones. */
+  async resenas(tiendaId: string, q: PaginaDto) {
+    await this.porId(tiendaId);
+    const filas = await this.ds.query(
+      `SELECT c.pedido_id AS "pedidoId", c.tienda AS calificacion, c.comentario, c.respuesta, c.respondido_en AS "respondidoEn",
+              c.creado_en AS "creadoEn", u.nombre, u.estado
+       FROM calificaciones c JOIN pedidos p ON p.id = c.pedido_id LEFT JOIN usuarios u ON u.id = p.cliente_id
+       WHERE c.tienda_id = $1 ORDER BY c.creado_en DESC LIMIT $2 OFFSET $3`,
+      [tiendaId, q.limit, (q.page - 1) * q.limit],
+    );
+    const [r] = await this.ds.query(
+      `SELECT count(*)::int AS total, round(avg(tienda), 2)::float8 AS promedio,
+              count(*) FILTER (WHERE tienda = 5)::int AS "5", count(*) FILTER (WHERE tienda = 4)::int AS "4",
+              count(*) FILTER (WHERE tienda = 3)::int AS "3", count(*) FILTER (WHERE tienda = 2)::int AS "2",
+              count(*) FILTER (WHERE tienda = 1)::int AS "1"
+       FROM calificaciones WHERE tienda_id = $1`,
+      [tiendaId],
+    );
+    // Solo el nombre y la inicial del apellido del cliente.
+    const autor = (nombre: string | null, estado: string | null) => {
+      if (!nombre || estado === 'eliminado') return 'Cliente';
+      const [n, a] = nombre.trim().split(/\s+/);
+      return a ? `${n} ${a[0]}.` : n;
+    };
+    const data = filas.map(({ nombre, estado, ...x }) => ({ ...x, cliente: autor(nombre, estado) }));
+    return {
+      ...pagina(data, r.total, q),
+      resumen: { promedio: r.promedio, total: r.total, porEstrellas: { 5: r['5'], 4: r['4'], 3: r['3'], 2: r['2'], 1: r['1'] } },
+    };
   }
 
   /** Grupos de opciones con sus opciones, por producto. */
@@ -269,7 +300,8 @@ export class TiendasService {
 
   /**
    * Ventas de la sucursal por fecha de creación del pedido (hora de Celaya).
-   * ventas = productos de pedidos entregados (lo que la tienda cobra al repartidor); el envío no cuenta.
+   * ventas = lo que la tienda cobró al repartidor en pedidos entregados (productos menos sus cupones); el envío no cuenta.
+   * ventasNetas = ventas − comisión de PaPedir.
    */
   async reporte(usuarioId: string, q: RangoFechasDto, tiendaId?: string) {
     const t = await this.deUsuario(usuarioId, tiendaId);
@@ -283,14 +315,16 @@ export class TiendasService {
               count(*) FILTER (WHERE estado = 'cancelado')::int AS cancelados,
               count(*) FILTER (WHERE estado = 'rechazado')::int AS rechazados,
               count(*) FILTER (WHERE estado NOT IN ('entregado','cancelado','rechazado'))::int AS en_curso,
-              coalesce(sum(subtotal) FILTER (WHERE estado = 'entregado'), 0)::float8 AS ventas,
+              coalesce(sum(monto_tienda) FILTER (WHERE estado = 'entregado'), 0)::float8 AS ventas,
+              coalesce(sum(comision_tienda) FILTER (WHERE estado = 'entregado'), 0)::float8 AS comisiones,
+              coalesce(sum(descuento) FILTER (WHERE estado = 'entregado' AND descuento_absorbe = 'tienda'), 0)::float8 AS descuentos,
               count(*) FILTER (WHERE estado = 'entregado' AND origen = 'manual')::int AS manuales
        ${base}`,
       params,
     );
     const porDia = await this.ds.query(
       `SELECT to_char((creado_en AT TIME ZONE '${ZONA}')::date, 'YYYY-MM-DD') AS fecha, count(*)::int AS pedidos,
-              sum(subtotal)::float8 AS ventas
+              sum(monto_tienda)::float8 AS ventas
        ${base} AND estado = 'entregado' GROUP BY 1 ORDER BY 1`,
       params,
     );
@@ -323,6 +357,9 @@ export class TiendasService {
         rechazados: resumen.rechazados,
         enCurso: resumen.en_curso,
         ventas: redondear(resumen.ventas),
+        descuentosCupones: redondear(resumen.descuentos),
+        comisionPlataforma: redondear(resumen.comisiones),
+        ventasNetas: redondear(resumen.ventas - resumen.comisiones),
         ticketPromedio: resumen.entregados ? redondear(resumen.ventas / resumen.entregados) : 0,
         calificacionPromedio: calif.promedio,
         calificaciones: calif.total,

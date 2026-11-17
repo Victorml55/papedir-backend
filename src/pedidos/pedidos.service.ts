@@ -1,26 +1,30 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { randomInt } from 'crypto';
+import { randomInt, randomUUID } from 'crypto';
 import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { pagina } from '../common/dtos';
 import { conflicto, invalido, noEncontrado, sinPermiso } from '../common/errores';
 import { coords, folio, redondear } from '../common/util';
-import { ESTADOS_FINALES, EstadoPedido, REGLAS } from '../config/reglas';
+import { ESTADOS_FINALES, EstadoPedido, MOTIVOS, REGLAS } from '../config/reglas';
+import { CuponesService } from '../cupones/cupones.service';
+import { FinanzasService } from '../finanzas/finanzas.service';
 import {
-  Calificacion, Direccion, EventoPedido, GrupoOpciones, Opcion, OpcionElegida, Pedido, PedidoItem, Producto, Tienda, Usuario,
+  Calificacion, Direccion, EventoPedido, GrupoOpciones, Opcion, OpcionElegida, Pedido, PedidoItem, Producto, Recargo, Tienda, Usuario,
   Vehiculo, Viaje,
 } from '../database/entities';
 import { EnvioService } from '../nucleo/envio.service';
 import { PushService } from '../nucleo/push.service';
 import { RealtimeService } from '../nucleo/realtime.service';
-import { CalificacionDto, CotizarManualDto, CotizarPedidoDto, CrearPedidoDto, ListarPedidosDto, PedidoManualDto } from './pedidos.dto';
+import {
+  CalificacionDto, CotizarManualDto, CotizarPedidoDto, CrearPedidoDto, GrupoPedidosDto, ListarPedidosDto, MotivoCancelacionDto, PedidoManualDto,
+} from './pedidos.dto';
 
 export const vistaVehiculo = (v: Vehiculo | null | undefined) =>
   v ? { tipo: v.tipo, marca: v.marca, modelo: v.modelo, color: v.color, placa: v.placa } : null;
 
 type Linea = { producto: Producto; cantidad: number; opciones: OpcionElegida[]; precioUnitario: number };
 
-const ESTADOS: EstadoPedido[] = ['creado', 'aceptado_tienda', 'listo_para_recoger', 'asignado', 'en_tienda', 'en_camino',
+const ESTADOS: EstadoPedido[] = ['programado', 'creado', 'aceptado_tienda', 'listo_para_recoger', 'asignado', 'en_tienda', 'en_camino',
   'en_domicilio', 'entregado', 'cancelado', 'rechazado'];
 
 export interface Transicion {
@@ -56,6 +60,8 @@ export class PedidosService {
     private readonly envio: EnvioService,
     private readonly rt: RealtimeService,
     private readonly push: PushService,
+    private readonly cupones: CuponesService,
+    private readonly finanzas: FinanzasService,
     @InjectRepository(Pedido) private readonly pedidos: Repository<Pedido>,
     @InjectRepository(PedidoItem) private readonly items: Repository<PedidoItem>,
     @InjectRepository(EventoPedido) private readonly eventos: Repository<EventoPedido>,
@@ -68,15 +74,33 @@ export class PedidosService {
 
   // ─────────────────────────── cotizar y crear
 
-  /** Valida el carrito con los precios vigentes y calcula subtotal, envío y total. */
+  /** Hora de entrega de un pedido programado: de 45 minutos a 7 días a partir de ahora. */
+  private horaProgramada(texto?: string) {
+    if (!texto) return null;
+    const h = new Date(texto);
+    const minutos = (h.getTime() - Date.now()) / 60000;
+    if (minutos < REGLAS.pedido.programadoMinMinutos) {
+      throw invalido(`Programa el pedido con al menos ${REGLAS.pedido.programadoMinMinutos} minutos de anticipación`, 'programadoPara');
+    }
+    if (minutos > REGLAS.pedido.programadoMaxDias * 1440) {
+      throw invalido(`Solo puedes programar hasta ${REGLAS.pedido.programadoMaxDias} días antes`, 'programadoPara');
+    }
+    return h;
+  }
+
+  /** Valida el carrito con los precios vigentes y calcula subtotal, envío, cupón, propina y total. */
   private async preparar(cliente: Usuario, dto: CotizarPedidoDto) {
     const tienda = await this.tiendas.findOneBy({ id: dto.tiendaId });
     if (!tienda) throw noEncontrado('Tienda no encontrada');
     const dueno = await this.usuarios.findOneBy({ id: tienda.ownerId });
-    const [{ abierta }] = await this.ds.query(`SELECT tienda_abierta_ahora($1) AS abierta`, [tienda.id]);
+    const programadoPara = this.horaProgramada(dto.programadoPara);
+    // Un pedido programado se valida contra el horario de la hora de entrega, no contra el de ahora.
+    const [{ abierta }] = await this.ds.query(`SELECT tienda_abierta_ahora($1, $2) AS abierta`, [tienda.id, programadoPara ?? new Date()]);
     if (!abierta || dueno?.estado !== 'activo') {
-      const pausa = tienda.abierta && tienda.pausadaHasta && tienda.pausadaHasta > new Date();
-      throw conflicto('TIENDA_CERRADA', pausa ? `${tienda.nombre} no está recibiendo pedidos por el momento` : `${tienda.nombre} está cerrada`);
+      const pausa = !programadoPara && tienda.abierta && tienda.pausadaHasta && tienda.pausadaHasta > new Date();
+      throw conflicto('TIENDA_CERRADA', programadoPara
+        ? `${tienda.nombre} no abre a esa hora`
+        : pausa ? `${tienda.nombre} no está recibiendo pedidos por el momento` : `${tienda.nombre} está cerrada`);
     }
 
     const direccion = await this.direcciones.findOneBy({ id: dto.direccionId, clienteId: cliente.id });
@@ -87,10 +111,14 @@ export class PedidosService {
     if (subtotal < REGLAS.pedido.minimoProductos) {
       throw conflicto('PEDIDO_MINIMO', `El pedido mínimo es de $${REGLAS.pedido.minimoProductos} en productos`);
     }
-    const { distanciaKm, costoEnvio } = await this.envio.cotizar(tienda, direccion);
-    const total = redondear(subtotal + costoEnvio);
+    const { distanciaKm, costoEnvio, recargos } = await this.envio.cotizar(tienda, direccion, programadoPara ?? new Date());
+    const cupon = dto.cupon?.trim() ? await this.cupones.aplicar(dto.cupon, cliente.id, tienda, subtotal, costoEnvio) : null;
+    const descuento = cupon?.descuento ?? 0;
+    const propina = redondear(dto.propina ?? 0);
+    const total = redondear(subtotal + costoEnvio + propina - descuento);
     this.validarMaximo(total);
-    return { tienda, direccion, lineas, subtotal, costoEnvio, total, distanciaKm };
+    const montoTienda = redondear(subtotal - (cupon?.absorbe === 'tienda' ? descuento : 0));
+    return { tienda, direccion, lineas, subtotal, costoEnvio, recargos, cupon, descuento, propina, total, montoTienda, distanciaKm, programadoPara };
   }
 
   /**
@@ -149,13 +177,21 @@ export class PedidosService {
     }
   }
 
-  private cotizacion(c: { distanciaKm: number; subtotal: number; costoEnvio: number; total: number }, preparacionMin: number) {
+  private cotizacion(
+    c: { distanciaKm: number; subtotal: number; costoEnvio: number; total: number; recargos: Recargo[]; descuento?: number; propina?: number; cupon?: any; programadoPara?: Date | null },
+    preparacionMin: number,
+  ) {
     return {
       distanciaKm: c.distanciaKm,
       subtotal: c.subtotal,
       costoEnvio: c.costoEnvio,
+      recargos: c.recargos,
+      descuento: c.descuento ?? 0,
+      cupon: c.cupon ? { codigo: c.cupon.cupon.codigo, descripcion: c.cupon.cupon.descripcion } : null,
+      propina: c.propina ?? 0,
       total: c.total,
       metodoPago: 'efectivo' as const,
+      programadoPara: c.programadoPara ?? null,
       tiempoEstimadoMin: preparacionMin + this.envio.minutosDeTraslado(c.distanciaKm),
     };
   }
@@ -165,54 +201,102 @@ export class PedidosService {
     return this.cotizacion(c, c.tienda.tiempoPreparacionMin);
   }
 
+  /** Inserta un pedido de la app ya validado (dentro de una transacción). Revalida el cupón con bloqueo. */
+  private async insertar(m: EntityManager, cliente: Usuario, c: Awaited<ReturnType<PedidosService['preparar']>>, notas: string | null, grupoId: string | null) {
+    if (c.cupon) {
+      const otra = await this.cupones.aplicar(c.cupon.cupon.codigo, cliente.id, c.tienda, c.subtotal, c.costoEnvio, m);
+      if (otra.descuento !== c.descuento) throw conflicto('CUPON_INVALIDO', 'El cupón cambió; vuelve a cotizar');
+    }
+    const programado = !!c.programadoPara;
+    const p = await m.save(
+      m.create(Pedido, {
+        estado: programado ? 'programado' : 'creado',
+        origen: 'app',
+        tiendaId: c.tienda.id,
+        clienteId: cliente.id,
+        destinoNombre: cliente.nombre,
+        destinoTelefono: cliente.telefono ?? '',
+        destinoDireccion: c.direccion.texto,
+        destinoReferencias: c.direccion.referencias,
+        destinoLat: c.direccion.lat,
+        destinoLng: c.direccion.lng,
+        subtotal: c.subtotal,
+        costoEnvio: c.costoEnvio,
+        recargos: c.recargos,
+        propina: c.propina,
+        descuento: c.descuento,
+        cuponId: c.cupon?.cupon.id ?? null,
+        descuentoAbsorbe: c.cupon?.absorbe ?? null,
+        montoTienda: c.montoTienda,
+        total: c.total,
+        distanciaKm: c.distanciaKm,
+        codigoEntrega: String(randomInt(0, 10000)).padStart(4, '0'),
+        notas,
+        grupoId,
+        programadoPara: c.programadoPara,
+        enviadoATiendaEn: programado ? null : new Date(),
+      }),
+    );
+    await m.insert(
+      PedidoItem,
+      c.lineas.map((l) => ({
+        pedidoId: p.id, productoId: l.producto.id, nombre: l.producto.nombre, cantidad: l.cantidad,
+        precioUnitario: l.precioUnitario, opciones: l.opciones, // precio y opciones quedan fijos en el pedido
+      })),
+    );
+    // Descuenta inventario de forma atómica: si otro pedido se llevó las últimas piezas, falla.
+    const porProducto = new Map<string, number>();
+    for (const l of c.lineas) if (l.producto.stock != null) porProducto.set(l.producto.id, (porProducto.get(l.producto.id) ?? 0) + l.cantidad);
+    for (const [productoId, cantidad] of porProducto) {
+      const [, filas] = await m.query(`UPDATE productos SET stock = stock - $2 WHERE id = $1 AND stock >= $2`, [productoId, cantidad]);
+      if (!filas) {
+        const prod = c.lineas.find((l) => l.producto.id === productoId).producto;
+        throw conflicto('PRODUCTO_AGOTADO', `Ya no quedan suficientes ${prod.nombre}`);
+      }
+    }
+    await m.insert(EventoPedido, {
+      pedidoId: p.id, tipo: 'creado', usuarioId: cliente.id, rol: cliente.rol,
+      detalle: programado ? `Programado para ${c.programadoPara.toISOString()}` : null,
+    });
+    return m.findOneByOrFail(Pedido, { id: p.id });
+  }
+
+  /** Avisa a la tienda de un pedido nuevo (o programado). */
+  private async avisarTienda(pedido: Pedido, tienda: Tienda) {
+    const vista = await this.vista(pedido, { id: null, rol: 'soporte' } as Usuario);
+    this.rt.emitir([`tienda:${tienda.id}`, 'soporte'], 'pedido:nuevo', vista);
+    if (pedido.estado === 'programado') {
+      const hora = new Intl.DateTimeFormat('es-MX', { timeZone: REGLAS.tienda.zonaHoraria, dateStyle: 'medium', timeStyle: 'short' }).format(pedido.programadoPara);
+      void this.push.aUsuarios([tienda.ownerId], 'Pedido programado', `${vista.folio} para ${hora}`, { pedidoId: pedido.id });
+    } else {
+      void this.push.aUsuarios([tienda.ownerId], 'Pedido nuevo', `${vista.folio} · $${pedido.montoTienda}. Tienes ${REGLAS.pedido.minutosParaAceptar} minutos para aceptarlo`, { pedidoId: pedido.id });
+    }
+    return vista;
+  }
+
   async crear(cliente: Usuario, dto: CrearPedidoDto) {
     const c = await this.preparar(cliente, dto);
-    const pedido = await this.ds.transaction(async (m) => {
-      const p = await m.save(
-        m.create(Pedido, {
-          estado: 'creado',
-          origen: 'app',
-          tiendaId: c.tienda.id,
-          clienteId: cliente.id,
-          destinoNombre: cliente.nombre,
-          destinoTelefono: cliente.telefono ?? '',
-          destinoDireccion: c.direccion.texto,
-          destinoReferencias: c.direccion.referencias,
-          destinoLat: c.direccion.lat,
-          destinoLng: c.direccion.lng,
-          subtotal: c.subtotal,
-          costoEnvio: c.costoEnvio,
-          total: c.total,
-          distanciaKm: c.distanciaKm,
-          codigoEntrega: String(randomInt(0, 10000)).padStart(4, '0'),
-          notas: dto.notas ?? null,
-        }),
-      );
-      await m.insert(
-        PedidoItem,
-        c.lineas.map((l) => ({
-          pedidoId: p.id, productoId: l.producto.id, nombre: l.producto.nombre, cantidad: l.cantidad,
-          precioUnitario: l.precioUnitario, opciones: l.opciones, // precio y opciones quedan fijos en el pedido
-        })),
-      );
-      // Descuenta inventario de forma atómica: si otro pedido se llevó las últimas piezas, falla.
-      const porProducto = new Map<string, number>();
-      for (const l of c.lineas) if (l.producto.stock != null) porProducto.set(l.producto.id, (porProducto.get(l.producto.id) ?? 0) + l.cantidad);
-      for (const [productoId, cantidad] of porProducto) {
-        const [, filas] = await m.query(`UPDATE productos SET stock = stock - $2 WHERE id = $1 AND stock >= $2`, [productoId, cantidad]);
-        if (!filas) {
-          const prod = c.lineas.find((l) => l.producto.id === productoId).producto;
-          throw conflicto('PRODUCTO_AGOTADO', `Ya no quedan suficientes ${prod.nombre}`);
-        }
-      }
-      await m.insert(EventoPedido, { pedidoId: p.id, tipo: 'creado', usuarioId: cliente.id, rol: cliente.rol });
-      return m.findOneByOrFail(Pedido, { id: p.id });
-    });
+    const pedido = await this.ds.transaction((m) => this.insertar(m, cliente, c, dto.notas ?? null, null));
+    await this.avisarTienda(pedido, c.tienda);
+    return this.vista(pedido, cliente);
+  }
 
-    const vista = await this.vista(pedido, cliente);
-    this.rt.emitir([`tienda:${c.tienda.id}`, 'soporte'], 'pedido:nuevo', { ...vista, codigoEntrega: null });
-    void this.push.aUsuarios([c.tienda.ownerId], 'Pedido nuevo', `${vista.folio} · $${pedido.total}. Tienes 5 minutos para aceptarlo`, { pedidoId: pedido.id });
-    return vista;
+  /** Carrito de varias tiendas: se valida todo y se crean los pedidos juntos (o ninguno). */
+  async crearGrupo(cliente: Usuario, dto: GrupoPedidosDto) {
+    const ids = dto.pedidos.map((x) => x.tiendaId);
+    if (new Set(ids).size !== ids.length) throw invalido('Cada tienda va una sola vez en el carrito', 'pedidos');
+    const preparados = [];
+    for (const x of dto.pedidos) {
+      preparados.push(await this.preparar(cliente, { ...x, direccionId: dto.direccionId, programadoPara: dto.programadoPara }));
+    }
+    const grupoId = randomUUID();
+    const pedidos = await this.ds.transaction(async (m) => {
+      const lista: Pedido[] = [];
+      for (const c of preparados) lista.push(await this.insertar(m, cliente, c, dto.notas ?? null, grupoId));
+      return lista;
+    });
+    for (const [i, p] of pedidos.entries()) await this.avisarTienda(p, preparados[i].tienda);
+    return { grupoId, total: redondear(pedidos.reduce((s, p) => s + p.total, 0)), pedidos: await this.vistas(pedidos, cliente) };
   }
 
   /** Sucursal elegida (X-Tienda-Id) o la primera del dueño. */
@@ -259,11 +343,14 @@ export class PedidosService {
           destinoLng: dto.destino.ubicacion.lng,
           descripcion: dto.descripcion,
           subtotal: dto.montoACobrar,
+          montoTienda: dto.montoACobrar,
           costoEnvio: e.costoEnvio,
+          recargos: e.recargos,
           total,
           distanciaKm: e.distanciaKm,
           notas: dto.notas ?? null,
           listoEn: new Date(),
+          enviadoATiendaEn: new Date(),
         }),
       );
       await m.insert(EventoPedido, [
@@ -383,10 +470,18 @@ export class PedidosService {
           })),
         subtotal: p.subtotal,
         costoEnvio: p.costoEnvio,
+        recargos: p.recargos ?? [],
+        propina: p.propina,
+        descuento: p.descuento,
         total: p.total,
         distanciaKm: p.distanciaKm,
         metodoPago: p.metodoPago,
-        montoAPagarTienda: p.subtotal,
+        montoAPagarTienda: p.montoTienda,
+        // Comisión de PaPedir: solo la ven la tienda, soporte y admin.
+        comisionTienda: visor.rol === 'cliente' || visor.rol === 'repartidor' ? null : p.comisionTienda,
+        grupoId: p.grupoId,
+        programadoPara: p.programadoPara,
+        motivoCancelacion: p.motivoCodigo,
         // El código de entrega solo lo ve el cliente dueño del pedido.
         codigoEntrega: visor.id === p.clienteId ? p.codigoEntrega : null,
         calificacion: c ? { tienda: c.tienda, repartidor: c.repartidor, comentario: c.comentario, creadoEn: c.creadoEn } : null,
@@ -414,6 +509,8 @@ export class PedidosService {
     const repPos = r?.lat != null ? { lat: r.lat, lng: r.lng } : null;
     const entrega = this.envio.minutosDeTraslado(p.distanciaKm);
     switch (p.estado) {
+      case 'programado':
+        return Math.max(0, Math.ceil((p.programadoPara.getTime() - Date.now()) / 60000));
       case 'creado':
       case 'aceptado_tienda': {
         const transcurridos = (Date.now() - p.creadoEn.getTime()) / 60000;
@@ -445,7 +542,8 @@ export class PedidosService {
       distanciaATiendaKm: metrosATienda == null ? null : redondear(metrosATienda / 1000),
       distanciaEntregaKm: p.distanciaKm,
       costoEnvio: p.costoEnvio,
-      montoAPagarTienda: p.subtotal,
+      propina: p.propina,
+      montoAPagarTienda: p.montoTienda,
       totalACobrar: p.total,
     };
   }
@@ -484,6 +582,7 @@ export class PedidosService {
         pedidoId: p.id, tipo: t.evento, usuarioId: t.actor?.id ?? null, rol: t.actor?.rol ?? null,
         detalle: t.detalle ?? null, lat: t.ubicacion?.lat ?? null, lng: t.ubicacion?.lng ?? null,
       });
+      if (t.hacia === 'entregado') await this.finanzas.registrarEntrega(m, p);
       if (viajeId) await this.cerrarViajeSiTermino(m, viajeId);
       return m.findOneByOrFail(Pedido, { id: p.id });
     });
@@ -510,6 +609,7 @@ export class PedidosService {
         { ...datos, actualizadoEn: p.actualizadoEn },
       );
       if (sinPush) return;
+      if (p.estado === 'creado') return void (await this.avisarTienda(p, tienda)); // un programado llegó a la tienda
 
       if (AVISO_CLIENTE[p.estado]) void this.push.aUsuarios([p.clienteId], `Pedido ${f}`, AVISO_CLIENTE[p.estado], datos);
 
@@ -548,9 +648,18 @@ export class PedidosService {
     return this.vista(p, usuario);
   }
 
-  async rechazar(usuario: Usuario, id: string, motivo: string) {
+  /** Traduce código y/o texto del catálogo de motivos. Un código desconocido para ese rol es un error. */
+  motivo(lista: keyof typeof MOTIVOS, dto: MotivoCancelacionDto) {
+    const fila = dto.codigo ? MOTIVOS[lista].find(([c]) => c === dto.codigo) : null;
+    if (dto.codigo && !fila) throw invalido(`Motivo desconocido: ${dto.codigo}`, 'codigo');
+    return { codigo: fila?.[0] ?? 'otro', texto: dto.motivo?.trim() || fila[1] };
+  }
+
+  async rechazar(usuario: Usuario, id: string, dto: MotivoCancelacionDto) {
+    const m = this.motivo('tienda', dto);
     const p = await this.transicionar(id, {
-      desde: ['creado'], hacia: 'rechazado', evento: 'rechazado', actor: usuario, detalle: motivo, validar: this.deMiTienda(usuario),
+      desde: ['creado'], hacia: 'rechazado', evento: 'rechazado', actor: usuario, detalle: m.texto, validar: this.deMiTienda(usuario),
+      cambios: () => ({ motivoCodigo: m.codigo }),
     });
     return this.vista(p, usuario);
   }
@@ -563,12 +672,13 @@ export class PedidosService {
     return this.vista(p, usuario);
   }
 
-  /** Cliente: solo en `creado`. Tienda: antes de que un repartidor lo tome. Después, solo soporte. */
-  async cancelar(usuario: Usuario, id: string, motivo: string) {
+  /** Cliente: programado o recién creado. Tienda: antes de que un repartidor lo tome. Después, solo soporte. */
+  async cancelar(usuario: Usuario, id: string, dto: MotivoCancelacionDto) {
     const esCliente = usuario.rol === 'cliente';
+    const m = this.motivo(esCliente ? 'cliente' : 'tienda', dto);
     const p = await this.transicionar(id, {
-      desde: esCliente ? ['creado'] : ['creado', 'aceptado_tienda', 'listo_para_recoger'],
-      hacia: 'cancelado', evento: 'cancelado', actor: usuario, detalle: motivo,
+      desde: esCliente ? ['programado', 'creado'] : ['programado', 'creado', 'aceptado_tienda', 'listo_para_recoger'],
+      hacia: 'cancelado', evento: 'cancelado', actor: usuario, detalle: m.texto, cambios: () => ({ motivoCodigo: m.codigo }),
       validar: esCliente
         ? (x) => { if (x.clienteId !== usuario.id) throw sinPermiso('El pedido no es tuyo'); }
         : this.deMiTienda(usuario),
@@ -608,5 +718,56 @@ export class PedidosService {
       return fila;
     });
     return { tienda: c.tienda, repartidor: c.repartidor, comentario: c.comentario, creadoEn: c.creadoEn };
+  }
+
+  // ─────────────────────────── repetir y reseñas
+
+  /**
+   * Arma el carrito de un pedido anterior con el menú de hoy. Lo que ya no se puede pedir
+   * (eliminado, agotado u opciones que cambiaron) va en `omitidos` para avisarle al cliente.
+   */
+  async repetir(cliente: Usuario, id: string) {
+    const p = await this.pedidos.findOneBy({ id });
+    if (!p) throw noEncontrado('Pedido no encontrado');
+    if (p.clienteId !== cliente.id) throw sinPermiso('El pedido no es tuyo');
+    const tienda = await this.tiendas.findOneByOrFail({ id: p.tiendaId });
+    const items = await this.items.find({ where: { pedidoId: p.id } });
+    const productos = await this.productos.findBy({ id: In(items.map((i) => i.productoId)), tiendaId: tienda.id, eliminado: false });
+    const grupos = productos.length ? await this.ds.getRepository(GrupoOpciones).findBy({ productoId: In(productos.map((x) => x.id)) }) : [];
+    const opciones = grupos.length ? await this.ds.getRepository(Opcion).findBy({ grupoId: In(grupos.map((g) => g.id)) }) : [];
+
+    const carrito = [];
+    const omitidos = [];
+    for (const i of items) {
+      const prod = productos.find((x) => x.id === i.productoId);
+      if (!prod) { omitidos.push({ nombre: i.nombre, motivo: 'Ya no está en el menú' }); continue; }
+      if (!prod.disponible || prod.stock === 0) { omitidos.push({ nombre: i.nombre, motivo: 'Agotado' }); continue; }
+      const suyos = grupos.filter((g) => g.productoId === prod.id);
+      const ids = (i.opciones ?? []).map((o) => {
+        const g = suyos.find((x) => x.nombre === o.grupo);
+        return opciones.find((x) => g && x.grupoId === g.id && x.nombre === o.nombre && x.disponible)?.id;
+      });
+      const completas = ids.every(Boolean) && suyos.every((g) => {
+        const n = ids.filter((oid) => opciones.find((x) => x.id === oid)?.grupoId === g.id).length;
+        return n >= g.minimo && n <= g.maximo;
+      });
+      if (!completas) { omitidos.push({ nombre: i.nombre, motivo: 'Sus opciones cambiaron; elígelas de nuevo' }); continue; }
+      const extras = ids.reduce((s, oid) => s + opciones.find((x) => x.id === oid).precioExtra, 0);
+      carrito.push({ productoId: prod.id, nombre: prod.nombre, cantidad: i.cantidad, opciones: ids, precioUnitario: redondear(prod.precio + extras) });
+    }
+    const [{ abierta }] = await this.ds.query(`SELECT tienda_abierta_ahora($1) AS abierta`, [tienda.id]);
+    return { tienda: { id: tienda.id, nombre: tienda.nombre, abiertaAhora: abierta }, items: carrito, omitidos };
+  }
+
+  /** La tienda responde públicamente a la reseña de un pedido (se puede editar). */
+  async responderResena(usuario: Usuario, pedidoId: string, texto: string) {
+    const c = await this.calificaciones.findOneBy({ pedidoId });
+    if (!c) throw noEncontrado('Ese pedido no tiene reseña');
+    if (!(await this.tiendas.existsBy({ id: c.tiendaId, ownerId: usuario.id }))) throw sinPermiso('La reseña no es de tu tienda');
+    Object.assign(c, { respuesta: texto.trim(), respondidoEn: new Date() });
+    await this.calificaciones.save(c);
+    const p = await this.pedidos.findOneBy({ id: pedidoId });
+    await this.push.aUsuarios([p?.clienteId], 'La tienda respondió tu reseña', c.respuesta.slice(0, 120), { pedidoId });
+    return { pedidoId, respuesta: c.respuesta, respondidoEn: c.respondidoEn };
   }
 }
