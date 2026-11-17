@@ -1,5 +1,5 @@
 import { Body, Controller, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
-import { Actor, Roles } from '../common/auth';
+import { Actor, Roles, TiendaSel } from '../common/auth';
 import { MotivoDto } from '../common/dtos';
 import { UuidPipe } from '../common/util';
 import { Usuario } from '../database/entities';
@@ -11,16 +11,16 @@ export class PedidosController {
   constructor(private readonly svc: PedidosService) {}
 
   @Get()
-  listar(@Actor() u: Usuario, @Query() q: ListarPedidosDto) { return this.svc.listar(u, q); }
+  listar(@Actor() u: Usuario, @Query() q: ListarPedidosDto, @TiendaSel() t?: string) { return this.svc.listar(u, q, false, t); }
 
   @Roles('cliente') @Post('cotizar') @HttpCode(200)
   cotizar(@Actor() u: Usuario, @Body() dto: CotizarPedidoDto) { return this.svc.cotizar(u, dto); }
 
   @Roles('tienda') @Post('cotizar-manual') @HttpCode(200)
-  cotizarManual(@Actor() u: Usuario, @Body() dto: CotizarManualDto) { return this.svc.cotizarManual(u, dto); }
+  cotizarManual(@Actor() u: Usuario, @Body() dto: CotizarManualDto, @TiendaSel() t?: string) { return this.svc.cotizarManual(u, dto, t); }
 
   @Roles('tienda') @Post('manual')
-  crearManual(@Actor() u: Usuario, @Body() dto: PedidoManualDto) { return this.svc.crearManual(u, dto); }
+  crearManual(@Actor() u: Usuario, @Body() dto: PedidoManualDto, @TiendaSel() t?: string) { return this.svc.crearManual(u, dto, t); }
 
   @Roles('cliente') @Post()
   crear(@Actor() u: Usuario, @Body() dto: CrearPedidoDto) { return this.svc.crear(u, dto); }

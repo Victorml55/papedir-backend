@@ -597,6 +597,269 @@ describe('PaPedir API', () => {
     });
   });
 
+  describe('Fase 2: repartidor', () => {
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+    const subirDoc = (quien: string, tipo: string, contentType = 'image/png') =>
+      request(http).post('/api/v1/documentos').set('Authorization', `Bearer ${tok[quien]}`).field('tipo', tipo)
+        .attach('archivo', png, { filename: 'doc', contentType });
+
+    it('registra su vehículo; la placa es obligatoria salvo en bicicleta', async () => {
+      await api('get', '/repartidor/vehiculo', id.ganador).expect(204);
+      await api('put', '/repartidor/vehiculo', id.ganador, { tipo: 'moto', color: 'Rojo' }).expect(400);
+      expect((await api('put', '/repartidor/vehiculo', id.otro, { tipo: 'bicicleta', color: 'Azul' }).expect(200)).body.placa).toBeNull();
+      const v = await api('put', '/repartidor/vehiculo', id.ganador, { tipo: 'moto', marca: 'Italika', color: 'Rojo', placa: 'gto-123' }).expect(200);
+      expect(v.body).toEqual({ tipo: 'moto', marca: 'Italika', modelo: null, color: 'Rojo', placa: 'GTO-123' });
+      await api('get', '/repartidor/vehiculo', 'cliente').expect(403);
+    });
+
+    it('el cliente ve vehículo, foto y calificación de su repartidor', async () => {
+      const p = (await api('get', `/pedidos/${id.pedido}`, 'cliente').expect(200)).body;
+      expect(p.repartidor).toMatchObject({ calificacion: 4, vehiculo: { tipo: 'moto', placa: 'GTO-123' } });
+      expect(p.etaMin).toBeNull(); // ya se entregó
+      expect((await api('get', '/auth/me', id.ganador)).body.calificacion).toBe(4);
+    });
+
+    it('sube documentos privados y soporte los revisa', async () => {
+      await subirDoc(id.ganador, 'constancia_fiscal').expect(400); // no aplica a repartidores
+      await subirDoc(id.ganador, 'ine', 'text/plain').expect(400);
+      await subirDoc('cliente', 'ine').expect(403);
+      const ine = (await subirDoc(id.ganador, 'ine').expect(201)).body;
+      expect(ine).toMatchObject({ tipo: 'ine', nombre: 'INE', estado: 'pendiente' });
+
+      const mios = (await api('get', '/documentos', id.ganador).expect(200)).body;
+      expect(mios.find((d) => d.tipo === 'licencia')).toMatchObject({ requerido: true, documento: null });
+      expect(mios.find((d) => d.tipo === 'ine').documento.estado).toBe('pendiente');
+
+      await api('get', `/soporte/usuarios/${id[id.ganador]}/documentos`, id.ganador).expect(403);
+      expect((await api('get', `/soporte/usuarios/${id[id.ganador]}/documentos`, 'soporte').expect(200)).body).toHaveLength(1);
+      const archivo = (await api('get', `/soporte/documentos/${ine.id}/archivo`, 'soporte').expect(200)).body;
+      expect(archivo.url).toMatch(/^data:image\/png;base64,/);
+      expect(new Date(archivo.expiraEn).getTime()).toBeGreaterThan(Date.now());
+
+      await api('post', `/soporte/documentos/${ine.id}/revisar`, 'soporte', { aprobado: false }).expect(400); // falta el motivo
+      const rechazado = (await api('post', `/soporte/documentos/${ine.id}/revisar`, 'soporte', { aprobado: false, motivo: 'Foto borrosa' }).expect(200)).body;
+      expect(rechazado).toMatchObject({ estado: 'rechazado', motivo: 'Foto borrosa' });
+      expect((await subirDoc(id.ganador, 'ine').expect(201)).body).toMatchObject({ id: ine.id, estado: 'pendiente', motivo: null });
+      await api('post', `/soporte/documentos/${ine.id}/revisar`, 'soporte', { aprobado: true }).expect(200);
+      expect((await subirDoc(id.ganador, 'ine').expect(409)).body.error).toBe('DOCUMENTO_APROBADO');
+
+      const ficha = (await api('get', `/soporte/usuarios/${id[id.ganador]}`, 'soporte')).body;
+      expect(ficha).toMatchObject({ documentosCompletos: false, vehiculo: { placa: 'GTO-123' } }); // falta la licencia
+      const eventos = (await api('get', `/soporte/usuarios/${id[id.ganador]}/eventos`, 'soporte')).body.map((e) => e.tipo);
+      expect(eventos).toEqual(expect.arrayContaining(['documento_rechazado', 'documento_aprobado']));
+    });
+
+    it('ganancias y corte: envío, efectivo cobrado y pagado a tiendas por día', async () => {
+      const g = (await api('get', '/repartidor/ganancias', id.ganador).expect(200)).body;
+      const [esperado] = await ds.query(
+        `SELECT count(*)::int AS n, sum(costo_envio)::float8 AS envio, sum(total)::float8 AS cobrado, sum(subtotal)::float8 AS pagado
+         FROM pedidos WHERE repartidor_id = $1 AND estado = 'entregado'`, [id[id.ganador]],
+      );
+      expect(g.resumen).toMatchObject({
+        pedidos: esperado.n, gananciaEnvio: esperado.envio, efectivoCobrado: esperado.cobrado, pagadoATiendas: esperado.pagado,
+        calificacion: 4, calificaciones: 1,
+      });
+      expect(g.porDia).toHaveLength(1);
+      expect(g.porDia[0].fecha).toBe(g.hasta);
+      expect((await api('get', '/repartidor/ganancias?desde=2026-01-10&hasta=2026-01-01', id.ganador).expect(400)).body.detalles[0].campo).toBe('desde');
+      await api('get', '/repartidor/ganancias?desde=2026-01-01&hasta=2026-12-31', id.ganador).expect(400); // más de 92 días
+      expect((await api('get', '/repartidor/ganancias?desde=2020-01-01&hasta=2020-01-07', id.ganador)).body.resumen.pedidos).toBe(0);
+    });
+
+    it('la ruta del viaje trae el tiempo estimado de cada parada pendiente', async () => {
+      const viaje = (await api('get', '/repartidor/viaje-actual', 'rep2').expect(200)).body;
+      const pendientes = viaje.paradas.filter((p) => !p.completada);
+      expect(pendientes.length).toBeGreaterThan(0);
+      pendientes.forEach((p, i) => {
+        expect(p.etaMin).toEqual(expect.any(Number));
+        if (i) expect(p.etaMin).toBeGreaterThanOrEqual(pendientes[i - 1].etaMin);
+      });
+      expect(viaje.pedidos[0].etaMin).toEqual(expect.any(Number));
+    });
+  });
+
+  describe('Fase 2: tienda', () => {
+    const carrito = (items: any[]) => ({ tiendaId: id.tiendaId, direccionId: id.casa, items });
+    const cotizar = (items: any[]) => api('post', '/pedidos/cotizar', 'cliente', carrito(items));
+    let salsa: any;
+    let extras: any;
+
+    it('define opciones de producto: grupos con mínimo, máximo y precio extra', async () => {
+      const grupos = [
+        { nombre: 'Salsa', minimo: 1, maximo: 1, opciones: [{ nombre: 'Verde' }, { nombre: 'Roja' }] },
+        { nombre: 'Extras', minimo: 0, maximo: 2, opciones: [{ nombre: 'Queso', precioExtra: 15 }, { nombre: 'Doble carne', precioExtra: 30 }, { nombre: 'Piña', precioExtra: 5, disponible: false }] },
+      ];
+      await api('put', `/productos/${id.pastor}/opciones`, 'tienda', { grupos: [{ ...grupos[0], maximo: 3 }] }).expect(400);
+      await api('put', `/productos/${id.pastor}/opciones`, 'tienda', { grupos: [{ ...grupos[0], minimo: 2, maximo: 1 }] }).expect(400);
+      await api('put', `/productos/${id.pastor}/opciones`, 'cliente', { grupos }).expect(403);
+      const p = (await api('put', `/productos/${id.pastor}/opciones`, 'tienda', { grupos }).expect(200)).body;
+      expect(p.grupos.map((g) => g.nombre)).toEqual(['Salsa', 'Extras']);
+      [salsa, extras] = p.grupos;
+      const menu = (await api('get', `/tiendas/${id.tiendaId}/menu`, 'cliente')).body;
+      expect(menu[0].productos.find((x) => x.id === id.pastor).grupos[1].opciones).toHaveLength(3);
+    });
+
+    it('el carrito respeta las opciones y suma sus precios', async () => {
+      const verde = salsa.opciones[0].id;
+      const roja = salsa.opciones[1].id;
+      const [queso, doble, pina] = extras.opciones.map((o) => o.id);
+      const err = async (items: any[], status = 400) => (await cotizar(items).expect(status)).body;
+
+      expect((await err([{ productoId: id.pastor, cantidad: 1 }])).message).toContain('Salsa');
+      expect((await err([{ productoId: id.pastor, cantidad: 1, opciones: [verde, roja] }])).error).toBe('VALIDACION');
+      expect((await err([{ productoId: id.pastor, cantidad: 1, opciones: [verde, queso, doble, pina] }], 409)).error).toBe('PRODUCTO_AGOTADO');
+      expect((await err([{ productoId: id.pastor, cantidad: 1, opciones: [verde, '00000000-0000-4000-8000-000000000000'] }])).error).toBe('VALIDACION');
+
+      // 2 con verde + queso ($100 c/u) y 1 con roja + doble carne ($115): líneas separadas.
+      const items = [
+        { productoId: id.pastor, cantidad: 1, opciones: [verde, queso] },
+        { productoId: id.pastor, cantidad: 1, opciones: [roja, doble] },
+        { productoId: id.pastor, cantidad: 1, opciones: [queso, verde] },
+      ];
+      expect((await cotizar(items).expect(200)).body.subtotal).toBe(315);
+      const pedido = (await api('post', '/pedidos', 'cliente', carrito(items)).expect(201)).body;
+      expect(pedido.items).toHaveLength(2);
+      expect(pedido.items).toEqual(expect.arrayContaining([
+        expect.objectContaining({ cantidad: 2, precioUnitario: 100, importe: 200, opciones: [{ grupo: 'Salsa', nombre: 'Verde', precioExtra: 0 }, { grupo: 'Extras', nombre: 'Queso', precioExtra: 15 }] }),
+        expect.objectContaining({ cantidad: 1, precioUnitario: 115 }),
+      ]));
+      expect(pedido.etaMin).toBeGreaterThan(15); // preparación + traslado
+      await api('post', `/pedidos/${pedido.id}/cancelar`, 'cliente', { motivo: 'Prueba' }).expect(200);
+      id.verde = verde;
+    });
+
+    it('inventario: baja al pedir, regresa al cancelar y agota en cero', async () => {
+      id.refresco = (await api('post', '/productos', 'tienda', { categoriaId: id.cat, nombre: 'Refresco', precio: 30, stock: 3 }).expect(201)).body.id;
+      const conTaco = (n: number) => [{ productoId: id.pastor, cantidad: 1, opciones: [id.verde] }, { productoId: id.refresco, cantidad: n }];
+      const stock = async () => (await api('get', '/tiendas/mia/productos', 'tienda')).body.find((x) => x.id === id.refresco);
+
+      expect((await cotizar(conTaco(4)).expect(409)).body.message).toContain('Solo quedan 3');
+      const a = (await api('post', '/pedidos', 'cliente', carrito(conTaco(2))).expect(201)).body;
+      expect((await stock()).stock).toBe(1);
+      await api('post', `/pedidos/${a.id}/cancelar`, 'cliente', { motivo: 'Prueba' }).expect(200);
+      expect((await stock()).stock).toBe(3);
+
+      const b = (await api('post', '/pedidos', 'cliente', carrito(conTaco(3))).expect(201)).body;
+      expect(await stock()).toMatchObject({ stock: 0, disponible: true, agotado: true });
+      expect((await cotizar(conTaco(1)).expect(409)).body.error).toBe('PRODUCTO_AGOTADO');
+      await api('post', `/pedidos/${b.id}/rechazar`, 'tienda', { motivo: 'Sin gas' }).expect(200);
+      expect((await stock()).stock).toBe(3);
+
+      await api('patch', `/productos/${id.refresco}`, 'tienda', { stock: null }).expect(200);
+      expect((await stock()).stock).toBeNull();
+    });
+
+    it('guarda varias fotos por producto; la primera es la principal', async () => {
+      const fotos = ['https://img.test/1.webp', 'https://img.test/2.webp'];
+      const p = (await api('patch', `/productos/${id.refresco}`, 'tienda', { imagenes: fotos }).expect(200)).body;
+      expect(p).toMatchObject({ imagenUrl: fotos[0], imagenes: fotos });
+      await api('patch', `/productos/${id.refresco}`, 'tienda', { imagenes: Array(6).fill(fotos[0]) }).expect(400);
+      await api('patch', `/productos/${id.refresco}`, 'tienda', { imagenes: ['no-es-url'] }).expect(400);
+      expect((await api('patch', `/productos/${id.refresco}`, 'tienda', { imagenUrl: null }).expect(200)).body.imagenes).toEqual([]);
+    });
+
+    it('horario semanal: fuera de turno no recibe pedidos', async () => {
+      const [{ hoy }] = await ds.query(`SELECT extract(dow FROM now() AT TIME ZONE 'America/Mexico_City')::int AS hoy`);
+      const otroDia = (hoy + 3) % 7;
+      const items = [{ productoId: id.pastor, cantidad: 1, opciones: [id.verde] }];
+      expect((await api('get', '/tiendas/mia/horario', 'tienda').expect(200)).body).toMatchObject({ usarHorario: false, turnos: [], abiertaAhora: true });
+      await api('put', '/tiendas/mia/horario', 'tienda', { usarHorario: true, turnos: [] }).expect(400);
+      await api('put', '/tiendas/mia/horario', 'tienda', { usarHorario: true, turnos: [{ dia: 1, abre: '9:00', cierra: '18:00' }] }).expect(400);
+      await api('put', '/tiendas/mia/horario', 'tienda', { usarHorario: true, turnos: [{ dia: 1, abre: '09:00', cierra: '09:00' }] }).expect(400);
+
+      const cerrado = (await api('put', '/tiendas/mia/horario', 'tienda', { usarHorario: true, turnos: [{ dia: otroDia, abre: '09:00', cierra: '18:00' }] }).expect(200)).body;
+      expect(cerrado).toMatchObject({ usarHorario: true, abiertaAhora: false, turnos: [{ dia: otroDia, abre: '09:00', cierra: '18:00' }] });
+      expect((await cotizar(items).expect(409)).body.error).toBe('TIENDA_CERRADA');
+      expect((await api('get', `/tiendas?lat=${CASA.lat}&lng=${CASA.lng}`, 'cliente')).body.meta.total).toBe(0);
+      const detalle = (await api('get', `/tiendas/${id.tiendaId}`, 'cliente').expect(200)).body;
+      expect(detalle).toMatchObject({ abierta: true, abiertaAhora: false, horario: [{ dia: otroDia }] });
+
+      const todoElDia = [0, 1, 2, 3, 4, 5, 6].map((dia) => ({ dia, abre: '00:00', cierra: '24:00' }));
+      expect((await api('put', '/tiendas/mia/horario', 'tienda', { usarHorario: true, turnos: todoElDia }).expect(200)).body.abiertaAhora).toBe(true);
+      await cotizar(items).expect(200);
+    });
+
+    it('un turno que cruza la medianoche cuenta para el día en que abre', async () => {
+      await api('put', '/tiendas/mia/horario', 'tienda', { usarHorario: true, turnos: [{ dia: 5, abre: '20:00', cierra: '02:00' }] }).expect(200);
+      // 2026-11-20 es viernes (dia 5); Celaya está en UTC-6.
+      const abierta = async (local: string) =>
+        (await ds.query(`SELECT tienda_abierta_ahora($1, $2::timestamptz) AS a`, [id.tiendaId, `${local}-06:00`]))[0].a;
+      expect(await abierta('2026-11-20T19:59:00')).toBe(false);
+      expect(await abierta('2026-11-20T21:00:00')).toBe(true);
+      expect(await abierta('2026-11-21T01:30:00')).toBe(true); // sábado de madrugada, turno del viernes
+      expect(await abierta('2026-11-21T02:00:00')).toBe(false);
+      expect(await abierta('2026-11-21T21:00:00')).toBe(false); // el sábado no abre
+      await api('put', '/tiendas/mia/horario', 'tienda', { usarHorario: false, turnos: [] }).expect(200);
+    });
+
+    it('pausa temporal: no recibe pedidos hasta que la quite o se cumpla el tiempo', async () => {
+      const items = [{ productoId: id.pastor, cantidad: 1, opciones: [id.verde] }];
+      await api('post', '/tiendas/mia/pausa', 'tienda', { minutos: 500 }).expect(400);
+      const t = (await api('post', '/tiendas/mia/pausa', 'tienda', { minutos: 30 }).expect(200)).body;
+      expect(t).toMatchObject({ abierta: true, abiertaAhora: false });
+      expect(new Date(t.pausadaHasta).getTime()).toBeGreaterThan(Date.now() + 29 * 60000);
+      expect((await cotizar(items).expect(409)).body.message).toContain('no está recibiendo pedidos');
+      await ds.query(`UPDATE tiendas SET pausada_hasta = now() - interval '1 minute' WHERE id = $1`, [id.tiendaId]);
+      await cotizar(items).expect(200); // la pausa venció sola
+      await api('post', '/tiendas/mia/pausa', 'tienda', { minutos: 15 }).expect(200);
+      expect((await api('delete', '/tiendas/mia/pausa', 'tienda').expect(200)).body).toMatchObject({ abiertaAhora: true, pausadaHasta: null });
+    });
+
+    it('reporte de ventas con resumen, días, horas y productos más vendidos', async () => {
+      const r = (await api('get', '/tiendas/mia/reporte', 'tienda').expect(200)).body;
+      const [esperado] = await ds.query(
+        `SELECT count(*) FILTER (WHERE estado = 'entregado')::int AS entregados, coalesce(sum(subtotal) FILTER (WHERE estado = 'entregado'), 0)::float8 AS ventas,
+                count(*) FILTER (WHERE estado = 'rechazado')::int AS rechazados
+         FROM pedidos WHERE tienda_id = $1`, [id.tiendaId],
+      );
+      expect(r.resumen).toMatchObject({ pedidosEntregados: esperado.entregados, ventas: esperado.ventas, rechazados: esperado.rechazados, calificacionPromedio: 5 });
+      expect(r.resumen.ticketPromedio).toBeCloseTo(esperado.ventas / esperado.entregados, 2);
+      expect(r.porDia).toHaveLength(1);
+      expect(r.porHora.reduce((s, h) => s + h.pedidos, 0)).toBe(esperado.entregados);
+      expect(r.productosMasVendidos[0]).toMatchObject({ nombre: 'Orden de pastor', cantidad: 2 });
+      await api('get', '/tiendas/mia/reporte', 'cliente').expect(403);
+    });
+
+    it('sucursales: crea una copiando el menú y trabaja con X-Tienda-Id', async () => {
+      const conSucursal = (metodo: any, ruta: string, tiendaId: string, cuerpo?: any) => api(metodo, ruta, 'tienda', cuerpo).set('X-Tienda-Id', tiendaId);
+      const s = (await api('post', '/tiendas/mias', 'tienda', {
+        nombre: 'Tacos Don Pepe Norte', categoria: 'comida', direccion: 'Av. Tecnológico 900', ubicacion: mover(TIENDA, 0.01), copiarMenuDe: id.tiendaId,
+      }).expect(201)).body;
+      expect(s).toMatchObject({ abierta: false, abiertaAhora: false });
+      id.sucursal = s.id;
+      expect((await api('get', '/tiendas/mias', 'tienda')).body.map((t) => t.id)).toEqual([id.tiendaId, s.id]);
+
+      // Sin header sigue trabajando con la primera (las apps que no manejan sucursales no cambian).
+      expect((await api('get', '/tiendas/mia', 'tienda')).body.id).toBe(id.tiendaId);
+      expect((await conSucursal('get', '/tiendas/mia', s.id)).body.id).toBe(s.id);
+      const copia = (await conSucursal('get', '/tiendas/mia/productos', s.id).expect(200)).body;
+      expect(copia.map((p) => p.nombre).sort()).toEqual((await api('get', '/tiendas/mia/productos', 'tienda')).body.map((p) => p.nombre).sort());
+      expect(copia.find((p) => p.nombre === 'Orden de pastor').grupos).toHaveLength(2);
+      expect(copia.every((p) => p.stock === null)).toBe(true);
+
+      await conSucursal('get', '/tiendas/mia', 'no-es-uuid').expect(400);
+      await conSucursal('get', '/tiendas/mia', id.pedido).expect(404); // no es una sucursal suya
+      expect((await conSucursal('patch', '/tiendas/mia', s.id, { abierta: true }).expect(200)).body.abierta).toBe(true);
+      expect((await api('get', '/tiendas/mia', 'tienda')).body.abierta).toBe(true);
+
+      const manual = (await conSucursal('post', '/pedidos/manual', s.id, {
+        destino: { nombre: 'Norte', telefono: '4619876543', direccion: 'Calle 1', ubicacion: mover(TIENDA, 0.012) }, descripcion: 'Paquete', montoACobrar: 50,
+      }).expect(201)).body;
+      expect(manual.tienda.id).toBe(s.id);
+      const soloNorte = (await conSucursal('get', '/pedidos', s.id)).body;
+      expect(soloNorte.data.map((p) => p.id)).toEqual([manual.id]);
+      const todas = (await api('get', '/pedidos?limit=100', 'tienda')).body;
+      expect(todas.meta.total).toBeGreaterThan(1);
+      expect(todas.data.some((p) => p.tienda.id === id.tiendaId)).toBe(true);
+      await api('post', `/pedidos/${manual.id}/cancelar`, 'tienda', { motivo: 'Prueba' }).expect(200);
+
+      await registrar('tiendaNueva', 'tienda', { tienda: { nombre: 'Nueva', categoria: 'comida', direccion: 'X', ubicacion: TIENDA } });
+      expect((await api('post', '/tiendas/mias', 'tiendaNueva', { nombre: 'Otra', categoria: 'comida', direccion: 'Y', ubicacion: TIENDA }).expect(409)).body.error).toBe('CUENTA_PENDIENTE');
+      const ficha = (await api('get', `/soporte/usuarios/${id.tienda}`, 'soporte')).body;
+      expect(ficha.tiendas).toHaveLength(2);
+    });
+  });
+
   describe('Imágenes', () => {
     it('acepta PNG y rechaza otros formatos', async () => {
       const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');

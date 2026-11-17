@@ -9,7 +9,7 @@ import { DataSource } from 'typeorm';
 import { AppModule } from '../app.module';
 import { REGLAS } from '../config/reglas';
 import { PedidosService } from '../pedidos/pedidos.service';
-import { CategoriaProducto, Direccion, Producto, Tienda, Usuario } from './entities';
+import { CategoriaProducto, Direccion, GrupoOpciones, HorarioTienda, Opcion, Producto, Tienda, Usuario, Vehiculo } from './entities';
 
 const PASSWORD = 'PaPedir123!';
 
@@ -69,8 +69,9 @@ async function main() {
   const ds = app.get(DataSource);
 
   if (reset) {
-    await ds.query(`TRUNCATE mensajes, tickets, calificaciones, eventos_pedido, pedido_items, pedidos, viajes, productos,
-      categorias_producto, tiendas, direcciones, dispositivos, refresh_tokens, codigos_verificacion, eventos_cuenta, usuarios
+    await ds.query(`TRUNCATE mensajes, tickets, calificaciones, eventos_pedido, pedido_items, pedidos, viajes, opciones,
+      grupos_opciones, productos, categorias_producto, horarios_tienda, tiendas, direcciones, dispositivos, refresh_tokens,
+      codigos_verificacion, eventos_cuenta, documentos, vehiculos, usuarios
       RESTART IDENTITY CASCADE`);
   } else if (await ds.getRepository(Usuario).count()) {
     console.log('La base ya tiene datos; no se sembró nada. Usa "npm run seed -- --reset" para empezar de cero.');
@@ -83,8 +84,12 @@ async function main() {
   const crear = (u: Partial<Usuario>) => usuarios.save(usuarios.create({ passwordHash, estado: 'activo', ...listos, ...u }));
 
   const cliente = await crear({ nombre: 'Ana López', email: 'cliente@papedir.test', telefono: '4611234567', rol: 'cliente' });
-  await crear({ nombre: 'Carlos Ruiz', email: 'repartidor@papedir.test', telefono: '4611112233', rol: 'repartidor', lat: 20.524, lng: -100.814, ubicacionEn: new Date() });
-  await crear({ nombre: 'Paola Vega', email: 'repartidor2@papedir.test', telefono: '4611112244', rol: 'repartidor', lat: 20.527, lng: -100.817, ubicacionEn: new Date() });
+  const rep1 = await crear({ nombre: 'Carlos Ruiz', email: 'repartidor@papedir.test', telefono: '4611112233', rol: 'repartidor', lat: 20.524, lng: -100.814, ubicacionEn: new Date() });
+  const rep2 = await crear({ nombre: 'Paola Vega', email: 'repartidor2@papedir.test', telefono: '4611112244', rol: 'repartidor', lat: 20.527, lng: -100.817, ubicacionEn: new Date() });
+  await ds.getRepository(Vehiculo).save([
+    { repartidorId: rep1.id, tipo: 'moto', marca: 'Italika', modelo: 'FT150', color: 'Rojo', placa: 'GTO123A' },
+    { repartidorId: rep2.id, tipo: 'bicicleta', marca: null, modelo: null, color: 'Azul', placa: null },
+  ]);
   await crear({ nombre: 'Soporte PaPedir', email: 'soporte@papedir.test', rol: 'soporte' });
   await crear({ nombre: 'Admin PaPedir', email: 'admin@papedir.test', rol: 'admin' });
 
@@ -107,9 +112,30 @@ async function main() {
       await ds.getRepository(Producto).save(
         (productos as readonly (readonly [string, string | null, number])[]).map(([nombre, descripcion, precio]) => ({
           tiendaId: tienda.id, categoriaId: c.id, nombre, descripcion, precio,
+          // Inventario de ejemplo en abarrotes; el resto sin control de existencias.
+          stock: t.categoria === 'abarrotes' ? 20 : null,
         })),
       );
     }
+    // Horario de ejemplo: la ferretería abre de lunes a sábado de 08:00 a 20:00 (pero con usarHorario = false).
+    if (t.categoria === 'materiales') {
+      await ds.getRepository(HorarioTienda).save([1, 2, 3, 4, 5, 6].map((dia) => ({ tiendaId: tienda.id, dia, abre: '08:00', cierra: '20:00' })));
+    }
+  }
+
+  // Opciones de ejemplo: los tacos llevan salsa (obligatoria) y extras (opcionales).
+  const tacos = await ds.getRepository(Producto).findBy({ nombre: 'Orden de pastor' });
+  for (const p of tacos) {
+    const salsa = await ds.getRepository(GrupoOpciones).save({ productoId: p.id, nombre: 'Salsa', minimo: 1, maximo: 1, orden: 0 });
+    const extras = await ds.getRepository(GrupoOpciones).save({ productoId: p.id, nombre: 'Extras', minimo: 0, maximo: 3, orden: 1 });
+    await ds.getRepository(Opcion).save([
+      { grupoId: salsa.id, nombre: 'Verde', precioExtra: 0, orden: 0 },
+      { grupoId: salsa.id, nombre: 'Roja', precioExtra: 0, orden: 1 },
+      { grupoId: salsa.id, nombre: 'Sin salsa', precioExtra: 0, orden: 2 },
+      { grupoId: extras.id, nombre: 'Queso', precioExtra: 15, orden: 0 },
+      { grupoId: extras.id, nombre: 'Doble carne', precioExtra: 30, orden: 1 },
+      { grupoId: extras.id, nombre: 'Cebolla asada', precioExtra: 10, orden: 2 },
+    ]);
   }
 
   // Tienda sin aprobar, para probar la pantalla de "cuenta en revisión".

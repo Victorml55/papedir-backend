@@ -1,15 +1,15 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, Not, Repository } from 'typeorm';
-import { PaginaDto } from '../common/dtos';
+import { PaginaDto, RangoFechasDto, rangoFechas } from '../common/dtos';
 import { conflicto, noEncontrado, sinPermiso } from '../common/errores';
 import { metrosEntre, redondear } from '../common/util';
 import { ESTADOS_CON_REPARTIDOR, EstadoPedido, REGLAS } from '../config/reglas';
-import { EventoPedido, Pedido, Tienda, Usuario, Viaje } from '../database/entities';
+import { EventoPedido, Pedido, Tienda, Usuario, Vehiculo, Viaje } from '../database/entities';
 import { EnvioService } from '../nucleo/envio.service';
 import { RealtimeService } from '../nucleo/realtime.service';
-import { PedidosService } from '../pedidos/pedidos.service';
-import { DisponiblesDto, EntregaDto } from './repartidor.dto';
+import { PedidosService, vistaVehiculo } from '../pedidos/pedidos.service';
+import { DisponiblesDto, EntregaDto, VehiculoDto } from './repartidor.dto';
 
 type Punto = { lat: number; lng: number };
 const R = REGLAS.repartidor;
@@ -25,7 +25,65 @@ export class RepartidorService {
     @InjectRepository(Pedido) private readonly pedidos: Repository<Pedido>,
     @InjectRepository(Viaje) private readonly viajes: Repository<Viaje>,
     @InjectRepository(Tienda) private readonly tiendas: Repository<Tienda>,
+    @InjectRepository(Vehiculo) private readonly vehiculos: Repository<Vehiculo>,
   ) {}
+
+  // ─────────────────────────── vehículo y ganancias
+
+  async vehiculo(rep: Usuario) {
+    return vistaVehiculo(await this.vehiculos.findOneBy({ repartidorId: rep.id }));
+  }
+
+  async guardarVehiculo(rep: Usuario, dto: VehiculoDto) {
+    await this.vehiculos.save({
+      repartidorId: rep.id, tipo: dto.tipo, marca: dto.marca?.trim() || null, modelo: dto.modelo?.trim() || null,
+      color: dto.color.trim(), placa: dto.tipo === 'bicicleta' ? null : dto.placa.toUpperCase(),
+    });
+    return this.vehiculo(rep);
+  }
+
+  /**
+   * Ganancias y corte de efectivo por día (hora de Celaya), de pedidos entregados.
+   * En cada pedido el repartidor paga los productos a la tienda, cobra el total al cliente y se queda con el envío.
+   * Con desde = hasta = hoy sirve como corte de caja del día.
+   */
+  async ganancias(rep: Usuario, q: RangoFechasDto) {
+    const { desde, hasta } = rangoFechas(q);
+    const zona = REGLAS.tienda.zonaHoraria;
+    const filas = await this.ds.query(
+      `SELECT to_char((entregado_en AT TIME ZONE '${zona}')::date, 'YYYY-MM-DD') AS fecha,
+              count(*)::int AS pedidos, count(DISTINCT viaje_id)::int AS viajes,
+              sum(costo_envio)::float8 AS envio, sum(total)::float8 AS cobrado, sum(subtotal)::float8 AS pagado,
+              sum(distancia_km)::float8 AS km
+       FROM pedidos
+       WHERE repartidor_id = $1 AND estado = 'entregado'
+         AND entregado_en >= ($2::date)::timestamp AT TIME ZONE '${zona}'
+         AND entregado_en < ($3::date + 1)::timestamp AT TIME ZONE '${zona}'
+       GROUP BY 1 ORDER BY 1`,
+      [rep.id, desde, hasta],
+    );
+    const dia = (f: any) => ({
+      fecha: f.fecha, pedidos: f.pedidos, viajes: f.viajes, gananciaEnvio: redondear(f.envio),
+      efectivoCobrado: redondear(f.cobrado), pagadoATiendas: redondear(f.pagado), kmRecorridos: redondear(f.km),
+    });
+    const suma = (k: string) => redondear(filas.reduce((s, f) => s + Number(f[k]), 0));
+    const [{ total }] = await this.ds.query(`SELECT count(*)::int AS total FROM calificaciones WHERE repartidor_id = $1`, [rep.id]);
+    return {
+      desde,
+      hasta,
+      resumen: {
+        pedidos: filas.reduce((s, f) => s + f.pedidos, 0),
+        viajes: filas.reduce((s, f) => s + f.viajes, 0),
+        gananciaEnvio: suma('envio'),
+        efectivoCobrado: suma('cobrado'),
+        pagadoATiendas: suma('pagado'),
+        kmRecorridos: suma('km'),
+        calificacion: rep.calificacion,
+        calificaciones: total,
+      },
+      porDia: filas.map(dia),
+    };
+  }
 
   // ─────────────────────────── conexión y ubicación
 
@@ -196,6 +254,7 @@ export class RepartidorService {
 
     const ruta = [];
     let pos: Punto = rep.lat != null ? { lat: rep.lat, lng: rep.lng } : (pendientes[0]?.p.tienda.ubicacion ?? { lat: 0, lng: 0 });
+    let minutos = 0; // acumulados desde la posición actual
     while (pendientes.length) {
       const candidatas = pendientes.filter((x) => x.tipo === 'tienda' || recogidos.has(x.p.id));
       const sig = candidatas.reduce((mejor, x) => {
@@ -205,10 +264,11 @@ export class RepartidorService {
       pendientes.splice(pendientes.indexOf(sig), 1);
       if (sig.tipo === 'tienda') recogidos.add(sig.p.id);
       const pa = parada(sig.p, sig.tipo, false);
-      ruta.push(pa);
+      minutos += this.envio.minutosEntre(pos, pa.ubicacion) + (ruta.length ? 3 : 0); // ~3 min por parada anterior
+      ruta.push({ ...pa, etaMin: minutos });
       pos = pa.ubicacion;
     }
-    return [...hechas, ...ruta];
+    return [...hechas.map((h) => ({ ...h, etaMin: null })), ...ruta];
   }
 
   // ─────────────────────────── marcas

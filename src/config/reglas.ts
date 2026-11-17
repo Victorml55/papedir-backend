@@ -28,6 +28,26 @@ export const REGLAS = {
     geocercaM: 150,
   },
   ticket: { horasCierreAutomatico: 48 },
+  tienda: {
+    zonaHoraria: 'America/Mexico_City', // horarios, reportes y ganancias se calculan en hora de Celaya
+    pausaMaxMin: 240, // una pausa ("no recibo pedidos por un rato") dura máximo 4 h
+    maxSucursales: 10,
+    maxFotosProducto: 5,
+    maxGruposOpciones: 10,
+    maxOpcionesPorGrupo: 20,
+  },
+  reportes: { maxDias: 92 },
+  documentos: {
+    tipos: {
+      repartidor: ['ine', 'licencia', 'tarjeta_circulacion', 'comprobante_domicilio'],
+      tienda: ['ine', 'comprobante_domicilio', 'constancia_fiscal'],
+    },
+    // Los que soporte debe ver aprobados antes de aprobar la cuenta (si exigirParaAprobar = true).
+    requeridos: { repartidor: ['ine', 'licencia'], tienda: ['ine'] },
+    exigirParaAprobar: false,
+    mimes: ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'],
+    minutosEnlace: 10, // vigencia del enlace para que soporte vea un documento
+  },
   cuenta: {
     maxIntentosLogin: 5, // contraseñas equivocadas seguidas antes de bloquear
     minutosBloqueo: 15,

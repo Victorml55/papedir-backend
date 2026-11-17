@@ -11,6 +11,18 @@ import { AppError, sinPermiso } from './errores';
 export const Publico = () => SetMetadata('publico', true);
 /** Roles que pueden usar la ruta. Sin este decorador, cualquier usuario autenticado. */
 export const Roles = (...roles: Rol[]) => SetMetadata('roles', roles);
+/**
+ * Sucursal elegida con el header `X-Tienda-Id` (rol tienda). Sin header = la primera sucursal del dueño.
+ * Solo dice cuál pidió; el servicio revisa que sea suya.
+ */
+export const TiendaSel = createParamDecorator((_: unknown, ctx: ExecutionContext): string | undefined => {
+  const v = ctx.switchToHttp().getRequest().headers['x-tienda-id'];
+  if (v == null || v === '') return undefined;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(v))) {
+    throw new AppError(400, 'VALIDACION', 'X-Tienda-Id no es un UUID válido', [{ campo: 'X-Tienda-Id', mensaje: 'Debe ser un UUID' }]);
+  }
+  return String(v);
+});
 /** Usuario autenticado (entidad completa). */
 export const Actor = createParamDecorator((_: unknown, ctx: ExecutionContext): Usuario => ctx.switchToHttp().getRequest().usuario);
 

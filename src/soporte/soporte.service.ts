@@ -5,12 +5,13 @@ import { Brackets, DataSource, Repository } from 'typeorm';
 import { AuthService, vistaUsuario } from '../auth/auth.service';
 import { pagina } from '../common/dtos';
 import { conflicto, noEncontrado } from '../common/errores';
-import { ESTADOS_FINALES, EstadoPedido } from '../config/reglas';
-import { Pedido, Tienda, Usuario } from '../database/entities';
+import { ESTADOS_FINALES, EstadoPedido, REGLAS } from '../config/reglas';
+import { Pedido, Tienda, Usuario, Vehiculo } from '../database/entities';
+import { DocumentosService } from '../documentos/documentos';
 import { BitacoraCuentasService } from '../nucleo/bitacora-cuentas.service';
 import { PushService } from '../nucleo/push.service';
 import { RealtimeService } from '../nucleo/realtime.service';
-import { PedidosService } from '../pedidos/pedidos.service';
+import { PedidosService, vistaVehiculo } from '../pedidos/pedidos.service';
 import { BuscarPedidosDto, BuscarUsuariosDto, CorregirUbicacionDto, MetricasDto, UsuarioInternoDto } from './soporte.dto';
 
 const NO_FINALES: EstadoPedido[] = ['creado', 'aceptado_tienda', 'listo_para_recoger', 'asignado', 'en_tienda', 'en_camino', 'en_domicilio'];
@@ -25,6 +26,7 @@ export class SoporteService {
     private readonly rt: RealtimeService,
     private readonly push: PushService,
     private readonly bitacora: BitacoraCuentasService,
+    private readonly documentos: DocumentosService,
     @InjectRepository(Pedido) private readonly pedidos: Repository<Pedido>,
     @InjectRepository(Usuario) private readonly usuarios: Repository<Usuario>,
     @InjectRepository(Tienda) private readonly tiendas: Repository<Tienda>,
@@ -125,6 +127,8 @@ export class SoporteService {
       terminosVersion: u.terminosVersion,
       terminosAceptadosEn: u.terminosAceptadosEn,
       tiendas: tiendas.map((t) => ({ id: t.id, nombre: t.nombre, abierta: t.abierta })),
+      vehiculo: u.rol === 'repartidor' ? vistaVehiculo(await this.ds.getRepository(Vehiculo).findOneBy({ repartidorId: u.id })) : null,
+      documentosCompletos: u.rol === 'repartidor' || u.rol === 'tienda' ? await this.documentos.completos(u) : null,
     };
   }
 
@@ -143,6 +147,9 @@ export class SoporteService {
   async aprobar(agente: Usuario, id: string) {
     const u = await this.usuario(id);
     if (u.estado !== 'pendiente_aprobacion') throw conflicto('TRANSICION_INVALIDA', 'La cuenta no está pendiente de aprobación');
+    if (REGLAS.documentos.exigirParaAprobar && !(await this.documentos.completos(u))) {
+      throw conflicto('DOCUMENTOS_INCOMPLETOS', 'Aprueba primero sus documentos obligatorios');
+    }
     u.estado = 'activo';
     await this.usuarios.save(u);
     await this.bitacora.registrar(u.id, 'aprobada', agente);

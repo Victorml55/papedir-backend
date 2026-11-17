@@ -10,6 +10,7 @@ import { AuthGuard, Publico } from './common/auth';
 import { FiltroErrores } from './common/errores';
 import { opcionesBD } from './database/data-source';
 import { DireccionesModule } from './direcciones/direcciones';
+import { DocumentosModule } from './documentos/documentos';
 import { NucleoModule } from './nucleo/nucleo.module';
 import { PedidosModule } from './pedidos/pedidos.module';
 import { RealtimeModule } from './realtime/realtime.module';
@@ -46,6 +47,7 @@ export class HealthController {
     DireccionesModule,
     TiendasModule,
     UploadsModule,
+    DocumentosModule,
     PedidosModule,
     RepartidorModule,
     TicketsModule,

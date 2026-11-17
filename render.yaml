@@ -26,6 +26,8 @@ services:
         value: "10"
       - key: SUPABASE_BUCKET
         value: papedir
+      - key: SUPABASE_BUCKET_PRIVADO
+        value: papedir-privado
       - key: DATABASE_URL
         sync: false # Transaction pooler de Supabase (puerto 6543)
       - key: SUPABASE_URL

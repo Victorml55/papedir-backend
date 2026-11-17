@@ -50,8 +50,9 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection {
       if (u.rol === 'repartidor') await socket.join('repartidores');
       if (u.rol === 'soporte' || u.rol === 'admin') await socket.join('soporte');
       if (u.rol === 'tienda') {
-        const t = await this.tiendas.findOneBy({ ownerId: u.id });
-        if (t) await socket.join(`tienda:${t.id}`);
+        // Recibe los eventos de todas sus sucursales.
+        const ts = await this.tiendas.findBy({ ownerId: u.id });
+        for (const t of ts) await socket.join(`tienda:${t.id}`);
       }
     } catch {
       socket.emit('error', { error: 'NO_AUTENTICADO', message: 'Token inválido o expirado' });
