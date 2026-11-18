@@ -310,6 +310,18 @@ async function correo() {
   }
 }
 
+async function stripe() {
+  seccion('Stripe (pagos con tarjeta)');
+  const llave = process.env.STRIPE_SECRET_KEY;
+  if (!llave) return aviso('Sin STRIPE_SECRET_KEY: solo se acepta pago en efectivo');
+  if (!llave.startsWith('sk_test_')) aviso('La llave secreta NO es de prueba: se harían cobros reales');
+  if (!process.env.STRIPE_PUBLISHABLE_KEY?.startsWith('pk_')) aviso('Falta STRIPE_PUBLISHABLE_KEY (pk_test_...): las apps la necesitan');
+  const r = await fetch('https://api.stripe.com/v1/balance', { headers: { Authorization: `Bearer ${llave}` } }).catch((e) => e as Error);
+  if (r instanceof Error) return falla(`No se pudo contactar a Stripe: ${r.message}`);
+  if (!r.ok) return falla(`Stripe rechazó la llave (${r.status})`);
+  ok(`Llave válida${llave.startsWith('sk_test_') ? ' (modo prueba)' : ''}`);
+}
+
 async function main() {
   console.log(`PaPedir · verificación de configuración (NODE_ENV=${process.env.NODE_ENV ?? 'sin definir'})`);
   await baseDeDatos();
@@ -317,6 +329,7 @@ async function main() {
   await storage();
   await firebase();
   await correo();
+  await stripe();
   console.log(fallas ? `\n${fallas} problema(s) por corregir.` : '\nTodo en orden.');
   process.exit(fallas ? 1 : 0);
 }

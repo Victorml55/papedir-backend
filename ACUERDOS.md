@@ -201,6 +201,10 @@ El campo `error` es un código estable; las apps deciden con él, no con el text
 | `CORREO_NO_VERIFICADO` | Cuenta de correo de Firebase sin verificar | Pantalla "Revisa tu correo" con botón Reenviar |
 | `FOTO_DEL_PROVEEDOR` | Cuenta de Google/GitHub quiere cambiar su foto | Ocultar el botón (usar `puedeCambiarFoto`) |
 | `CUENTA_FIREBASE` | Cuenta de Firebase usando rutas de contraseña de PaPedir | Usar el SDK de Firebase |
+| `PAGO_PENDIENTE` (402) | La tarjeta no se ha confirmado | Volver a mostrar el formulario de pago |
+| `PAGO_NO_COINCIDE` | El total cambió desde que se autorizó | Volver a pedir el intento y pagar otra vez |
+| `PAGO_RECHAZADO` (402) | El banco rechazó el cobro | Ofrecer otra tarjeta o efectivo |
+| `PAGOS_NO_CONFIGURADO` (503) | Stripe no está configurado | Ocultar la opción de tarjeta |
 
 La lista completa está en el schema `Error` de `openapi.yaml`. Todos los valores numéricos (montos, distancias, tiempos) están en la sección de reglas de negocio de la Definición del proyecto.
 
@@ -573,7 +577,7 @@ Las piezas compartidas van en `core` (Dennis) para no hacerlas 3 veces. Cada qui
 | Caché de imágenes sin conexión | — | `cached_network_image` en los widgets comunes | Usarlo en menú y productos |
 | Sensor | — | Huella (`local_auth`) para confirmar la entrega | Cliente: huella para confirmar el pago. Tienda: agitar el celular (`sensors_plus`) para pausar pedidos |
 | Mapa nativo (sin WebView) | — | `google_maps_flutter`: pedidos disponibles y ruta del viaje | Cliente: tienda y repartidor en vivo. Tienda: su ubicación |
-| Pagos | Stripe en modo prueba: pago de pedidos y planes de tienda (siguiente fase) | — | Cliente: pago con tarjeta (`flutter_stripe`). Tienda: pantalla de planes |
+| Pagos | Stripe en modo prueba: pago de pedidos y planes de tienda ✅ | — | Cliente: pago con tarjeta (`flutter_stripe`). Tienda: pantalla de planes |
 | Reporte técnico | Arquitectura, backend y la justificación de la sección "Por qué Firebase y Supabase" | Su app y `core` | Sus apps |
 
 ### Orden
@@ -581,7 +585,36 @@ Las piezas compartidas van en `core` (Dennis) para no hacerlas 3 veces. Cada qui
 1. **Victor:** activa Firebase (Auth, Firestore y Storage) y pega las reglas de abajo. ✅ `POST /auth/firebase` ya está.
 2. **Dennis:** login con Firebase, preferencias y push en `core`. Omar y él lo usan en cuanto esté.
 3. **Omar y Dennis:** onboarding, mapa, sensor, widget avanzado y responsivo. No dependen del backend.
-4. **Victor:** pagos con Stripe. **Omar:** pantallas de pago y planes en cuanto el contrato esté publicado.
+4. **Victor:** pagos con Stripe ✅. **Omar:** pantallas de pago y planes (flujo abajo).
+
+### Pago con tarjeta (App Cliente)
+
+```dart
+// main(): Stripe.publishableKey = (await api.get('/pagos/config')).data['publishableKey'];
+// 1. Pedir el intento con el mismo cuerpo de /pedidos/cotizar
+final r = (await api.post('/pagos/intento', data: carrito)).data;
+// 2. Formulario nativo de tarjeta (CardField o PaymentSheet de flutter_stripe) y confirmar
+await Stripe.instance.initPaymentSheet(paymentSheetParameters: SetupPaymentSheetParameters(
+  paymentIntentClientSecret: r['clientSecret'], merchantDisplayName: 'PaPedir'));
+await Stripe.instance.presentPaymentSheet();     // aquí va la confirmación con huella (sensor)
+// 3. Crear el pedido: el backend verifica el monto y cobra
+await api.post('/pedidos', data: {...carrito, 'metodoPago': 'tarjeta', 'paymentIntentId': r['paymentIntentId']});
+```
+
+- Tarjeta de prueba: `4242 4242 4242 4242`, cualquier fecha futura y CVC. Fondos insuficientes: `4000 0000 0000 9995`.
+- Si el pedido se cancela o rechaza, el backend reembolsa solo (`pagoEstado: reembolsado`).
+- Con tarjeta, `montoAPagarTienda` y `totalACobrar` son 0: el repartidor no maneja efectivo en ese pedido.
+- Los carritos de varias tiendas (`/pedidos/grupo`) son solo en efectivo.
+
+### Planes de tienda (App Tienda)
+
+- `GET /planes`: Básico (gratis, comisión general), Pro ($199/mes, 7 %) y Premium ($399/mes, 4 % y primero en búsquedas).
+- `POST /tiendas/mia/plan { plan }` → si cuesta, devuelve `clientSecret`; se paga con PaymentSheet y luego `POST /tiendas/mia/plan/confirmar { paymentIntentId }`.
+- `GET /tiendas/mia/plan`: plan vigente, vencimiento, comisión que se aplica y pagos. Cada pago da 30 días; al vencer vuelve a Básico y llega una notificación.
+
+### Dinero con tarjeta
+
+PaPedir cobra el total. Al entregarse, la tienda recibe a su favor su venta (`venta_tarjeta`) menos su comisión, y el repartidor su envío y propina (`envio_tarjeta`) menos la comisión del envío; se salda en las liquidaciones de admin como el resto.
 
 ### Login con Firebase: flujo en la app
 

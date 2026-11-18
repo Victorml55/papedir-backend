@@ -53,10 +53,11 @@ export class RepartidorService {
     const filas = await this.ds.query(
       `SELECT to_char((entregado_en AT TIME ZONE '${zona}')::date, 'YYYY-MM-DD') AS fecha,
               count(*)::int AS pedidos, count(DISTINCT viaje_id)::int AS viajes,
-              sum(costo_envio)::float8 AS envio, sum(propina)::float8 AS propinas, sum(total)::float8 AS cobrado,
-              sum(monto_tienda)::float8 AS pagado, sum(distancia_km)::float8 AS km,
+              sum(costo_envio)::float8 AS envio, sum(propina)::float8 AS propinas,
+              coalesce(sum(total) FILTER (WHERE metodo_pago = 'efectivo'), 0)::float8 AS cobrado,
+              coalesce(sum(monto_tienda) FILTER (WHERE metodo_pago = 'efectivo'), 0)::float8 AS pagado, sum(distancia_km)::float8 AS km,
               coalesce(sum(comision_envio), 0)::float8 AS comision,
-              coalesce(sum(descuento) FILTER (WHERE descuento_absorbe = 'plataforma'), 0)::float8 AS reembolso
+              coalesce(sum(descuento) FILTER (WHERE descuento_absorbe = 'plataforma' AND metodo_pago = 'efectivo'), 0)::float8 AS reembolso
        FROM pedidos
        WHERE repartidor_id = $1 AND estado = 'entregado'
          AND entregado_en >= ($2::date)::timestamp AT TIME ZONE '${zona}'
@@ -227,8 +228,9 @@ export class RepartidorService {
       estado: viaje.estado,
       maxPedidos: R.maxPedidosPorViaje,
       // Efectivo: paga el subtotal en cada tienda al recoger y cobra el total en cada domicilio.
-      efectivoAPagarTiendas: redondear(pedidos.filter((p) => porRecoger(p.estado)).reduce((s, p) => s + p.montoTienda, 0)),
-      efectivoACobrar: redondear(pedidos.filter((p) => p.estado !== 'entregado').reduce((s, p) => s + p.total, 0)),
+      // Los pedidos pagados con tarjeta no mueven efectivo.
+      efectivoAPagarTiendas: redondear(pedidos.filter((p) => porRecoger(p.estado) && p.metodoPago === 'efectivo').reduce((s, p) => s + p.montoTienda, 0)),
+      efectivoACobrar: redondear(pedidos.filter((p) => p.estado !== 'entregado' && p.metodoPago === 'efectivo').reduce((s, p) => s + p.total, 0)),
       gananciaEnvio: redondear(pedidos.reduce((s, p) => s + p.costoEnvio, 0)),
       propinas: redondear(pedidos.reduce((s, p) => s + p.propina, 0)),
       paradas: this.ordenarParadas(vistas, rep),

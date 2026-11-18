@@ -203,3 +203,12 @@ La API manda por correo los códigos para verificar el correo y para recuperar l
 1. Crea una cuenta en [resend.com](https://resend.com) y en **API Keys** genera una llave con permiso *Sending access*.
 2. En Render agrega `RESEND_API_KEY` con esa llave y revisa con `npm run verificar`.
 3. Con el remitente de prueba `onboarding@resend.dev`, Resend **solo entrega al correo con el que creaste la cuenta**. Sirve para probar; para que le llegue a cualquier usuario, verifica un dominio propio en **Domains** y cambia `CORREO_REMITENTE` a `PaPedir <no-responder@tu-dominio>`.
+### 6. Stripe (pago con tarjeta y planes de tienda)
+
+1. Crea una cuenta en [stripe.com](https://stripe.com) (no hace falta activar pagos reales) y deja activado **Modo de prueba**.
+2. **Developers → API keys**: copia la *Publishable key* (`pk_test_...`) y la *Secret key* (`sk_test_...`).
+3. En Render agrégalas como `STRIPE_PUBLISHABLE_KEY` y `STRIPE_SECRET_KEY` y revisa con `npm run verificar`.
+4. Para probar en la app usa la tarjeta `4242 4242 4242 4242`, cualquier fecha futura y cualquier CVC. `4000 0000 0000 9995` simula fondos insuficientes.
+
+La llave secreta nunca va en las apps ni en el chat del equipo; las apps reciben la publicable con `GET /pagos/config`.
+

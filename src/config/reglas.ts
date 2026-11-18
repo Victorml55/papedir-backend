@@ -35,6 +35,20 @@ export const REGLAS = {
     demanda: { activo: false, pedidosEsperando: 5, monto: 10 }, // pedidos listos con más de 5 min sin repartidor
   },
   notificaciones: { diasConservar: 60 },
+  pagos: {
+    moneda: 'mxn',
+    maximoTarjeta: 10000, // con tarjeta el límite es más alto que en efectivo
+    diasPlan: 30,
+  },
+  /**
+   * Planes de suscripción de las tiendas (se pagan con tarjeta, por 30 días).
+   * comisionPct null = la comisión general de /admin/configuracion.
+   */
+  planes: [
+    { codigo: 'basico', nombre: 'Básico', precioMensual: 0, comisionPct: null, beneficios: ['Recibe pedidos de la app', 'Comisión general'] },
+    { codigo: 'pro', nombre: 'Pro', precioMensual: 199, comisionPct: 7, beneficios: ['Comisión de 7%', 'Cupones propios ilimitados'] },
+    { codigo: 'premium', nombre: 'Premium', precioMensual: 399, comisionPct: 4, beneficios: ['Comisión de 4%', 'Aparece primero en las búsquedas'] },
+  ],
   chat: { maxTexto: 500 },
   repartidor: {
     radioKm: 3,

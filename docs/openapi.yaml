@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: PaPedir API
-  version: 1.4.0
+  version: 1.5.0
   description: |
     Contrato de la API de PaPedir, plataforma de reparto a domicilio en Celaya, Gto.
 
@@ -46,6 +46,8 @@ tags:
     description: Web (rol admin)
   - name: Cliente
     description: Favoritos, búsqueda, notificaciones y catálogos
+  - name: Pagos
+    description: Pago con tarjeta (Stripe, modo prueba) y planes de suscripción de las tiendas
   - name: Finanzas
     description: Comisiones, saldos con PaPedir y liquidaciones
   - name: Configuración
@@ -733,6 +735,88 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Tienda' }
         '400': { $ref: '#/components/responses/ValidationError' }
+
+  /tiendas/mia/plan:
+    parameters:
+      - $ref: '#/components/parameters/TiendaSel'
+    get:
+      operationId: miPlan
+      tags: [Pagos]
+      summary: Plan vigente de mi sucursal, su comisión y los pagos hechos (rol tienda)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MiPlan' }
+    post:
+      operationId: elegirPlan
+      tags: [Pagos]
+      summary: Elegir plan (rol tienda)
+      description: |
+        `basico` cambia de inmediato. `pro` o `premium` devuelven `clientSecret` para pagar con flutter_stripe;
+        después hay que llamar a `/tiendas/mia/plan/confirmar`. Cada pago da 30 días; renovar el mismo plan suma los días.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plan]
+              properties:
+                plan: { type: string, enum: [basico, pro, premium] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plan: { type: string }
+                  requierePago: { type: boolean }
+                  monto: { type: number }
+                  paymentIntentId: { type: string }
+                  clientSecret: { type: string }
+                  publishableKey: { type: string, nullable: true }
+        '409':
+          description: Cuenta en revisión (`CUENTA_PENDIENTE`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /tiendas/mia/plan/confirmar:
+    parameters:
+      - $ref: '#/components/parameters/TiendaSel'
+    post:
+      operationId: confirmarPlan
+      tags: [Pagos]
+      summary: Activar el plan después de pagarlo (rol tienda)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [paymentIntentId]
+              properties:
+                paymentIntentId: { type: string }
+      responses:
+        '200':
+          description: Plan activo
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MiPlan' }
+        '402':
+          description: El pago no se ha completado (`PAGO_PENDIENTE`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Pago ya usado o con otro monto
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /tiendas/mia/horario:
     parameters:
@@ -1952,6 +2036,74 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/EstadoDeCuenta' }
 
+  /pagos/config:
+    get:
+      operationId: configuracionPagos
+      tags: [Pagos]
+      summary: Llave publicable de Stripe para inicializar flutter_stripe
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  publishableKey: { type: string, nullable: true, example: pk_test_... }
+                  moneda: { type: string, example: mxn }
+                  maximoTarjeta: { type: number, example: 10000 }
+
+  /pagos/intento:
+    post:
+      operationId: crearIntentoDePago
+      tags: [Pagos]
+      summary: Paso 1 del pago con tarjeta de un pedido (rol cliente)
+      description: |
+        Recibe el mismo cuerpo que POST /pedidos/cotizar. Crea un PaymentIntent de Stripe por el total que solo
+        autoriza la tarjeta (no cobra todavía).
+        1. La app muestra el formulario de tarjeta de flutter_stripe y confirma con `clientSecret`.
+        2. Crea el pedido con `POST /pedidos` + `metodoPago: tarjeta` + `paymentIntentId`.
+        3. El backend verifica que lo autorizado sea exactamente el total, cobra y crea el pedido.
+        Si el pedido no se puede crear, no se cobra; si se cancela o rechaza después, se reembolsa solo.
+        El backend nunca ve los datos de la tarjeta.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CotizarPedidoRequest' }
+      responses:
+        '200':
+          description: Intento creado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  paymentIntentId: { type: string, example: pi_3QxYz... }
+                  clientSecret: { type: string }
+                  publishableKey: { type: string, nullable: true }
+                  cotizacion: { $ref: '#/components/schemas/Cotizacion' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '503':
+          description: Stripe no está configurado (`PAGOS_NO_CONFIGURADO`); ofrecer efectivo
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /planes:
+    get:
+      operationId: listarPlanes
+      tags: [Pagos]
+      summary: Planes de suscripción para tiendas
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Plan' }
+
   /uploads:
     post:
       operationId: subirImagen
@@ -2889,7 +3041,8 @@ components:
             CUENTA_BLOQUEADA, CODIGO_INVALIDO, PASSWORD_INCORRECTA, CORREO_YA_VERIFICADO, VERSION_TERMINOS,
             TIENE_PEDIDOS_ACTIVOS, ULTIMO_ADMIN, LIMITE_SUCURSALES, DOCUMENTO_APROBADO, DOCUMENTOS_INCOMPLETOS,
             CUPON_INVALIDO, CUPON_DUPLICADO, CHAT_CERRADO, CORREO_NO_VERIFICADO, REGISTRO_REQUERIDO, CUENTA_FIREBASE,
-            FOTO_DEL_PROVEEDOR, FIREBASE_NO_CONFIGURADO
+            FOTO_DEL_PROVEEDOR, FIREBASE_NO_CONFIGURADO, PAGOS_NO_CONFIGURADO, PAGO_PENDIENTE, PAGO_NO_COINCIDE,
+            PAGO_USADO, PAGO_RECHAZADO, PAGO_INVALIDO
           example: PEDIDO_YA_TOMADO
         message: { type: string, example: El pedido ya fue tomado por otro repartidor }
         detalles:
@@ -2966,8 +3119,8 @@ components:
 
     MetodoPago:
       type: string
-      description: Solo efectivo en esta versión; tarjeta se agregará después.
-      enum: [efectivo]
+      description: efectivo (al recibir) o tarjeta (Stripe; se paga antes de crear el pedido)
+      enum: [efectivo, tarjeta]
 
     App:
       type: string
@@ -3179,6 +3332,10 @@ components:
           description: Recibe pedidos en este momento (abierta, sin pausa y dentro de su horario). Lo que debe mostrar la app.
         pausadaHasta: { type: string, format: date-time, nullable: true }
         usarHorario: { type: boolean }
+        plan:
+          type: string
+          enum: [basico, pro, premium]
+          description: Plan vigente. Las tiendas Premium aparecen primero en la búsqueda
         tiempoPreparacionMin: { type: integer, example: 20 }
         calificacion: { type: number, nullable: true, minimum: 1, maximum: 5, example: 4.7 }
         distanciaKm:
@@ -3403,6 +3560,7 @@ components:
       properties:
         tiendaId: { type: string, format: uuid }
         direccionId: { type: string, format: uuid }
+        metodoPago: { $ref: '#/components/schemas/MetodoPago' }
         cupon: { type: string, example: BIENVENIDA, description: Código de cupón (mayúsculas o minúsculas) }
         propina: { type: number, minimum: 0, maximum: 500, example: 20, description: Para el repartidor; se cobra en efectivo con el total }
         programadoPara:
@@ -3462,6 +3620,10 @@ components:
         direccionId: { type: string, format: uuid }
         metodoPago: { $ref: '#/components/schemas/MetodoPago' }
         notas: { type: string, nullable: true, example: Sin cebolla }
+        paymentIntentId:
+          type: string
+          example: pi_3QxYz...
+          description: Obligatorio con metodoPago = tarjeta. El de POST /pagos/intento, ya confirmado en la app con flutter_stripe
         cupon: { type: string, example: BIENVENIDA, description: Código de cupón (mayúsculas o minúsculas) }
         propina: { type: number, minimum: 0, maximum: 500, example: 20, description: Para el repartidor; se cobra en efectivo con el total }
         programadoPara:
@@ -3586,9 +3748,16 @@ components:
         total: { type: number, example: 216.0 }
         distanciaKm: { type: number, example: 4.42 }
         metodoPago: { $ref: '#/components/schemas/MetodoPago' }
+        pagoEstado:
+          type: string
+          nullable: true
+          enum: [pagado, reembolsado, reembolso_fallido, null]
+          description: Solo con tarjeta. Si se cancela o rechaza se reembolsa solo
         montoAPagarTienda:
           type: number
-          description: Efectivo que el repartidor entrega a la tienda al recoger (subtotal menos el cupón si lo da la tienda)
+          description: |
+            Efectivo que el repartidor entrega a la tienda al recoger (subtotal menos el cupón si lo da la tienda).
+            0 si se pagó con tarjeta (PaPedir le paga a la tienda en su liquidación)
           example: 170.0
         comisionTienda:
           type: number
@@ -3641,6 +3810,8 @@ components:
             - completado_por_soporte
             - liberado_por_soporte
             - cancelado_automatico
+            - reembolsado
+            - reembolso_fallido
             - calificado
         usuarioId: { type: string, format: uuid }
         rol: { $ref: '#/components/schemas/Rol' }
@@ -3667,7 +3838,8 @@ components:
           description: Ganancia del repartidor por este pedido
           example: 46.0
         propina: { type: number, example: 0 }
-        montoAPagarTienda: { type: number, example: 170.0 }
+        metodoPago: { $ref: '#/components/schemas/MetodoPago' }
+        montoAPagarTienda: { type: number, example: 170.0, description: 0 si se pagó con tarjeta }
         totalACobrar:
           type: number
           description: Efectivo a cobrar en el domicilio
@@ -3935,7 +4107,10 @@ components:
         id: { type: string, format: uuid }
         tipo:
           type: string
-          enum: [comision_tienda, comision_envio, descuento_plataforma, liquidacion]
+          enum: [comision_tienda, comision_envio, descuento_plataforma, liquidacion, venta_tarjeta, envio_tarjeta]
+          description: |
+            venta_tarjeta / envio_tarjeta: pedido pagado con tarjeta; PaPedir le debe a la tienda su venta
+            y al repartidor su envío y propina
         monto: { type: number, description: '> 0 aumenta lo que debes a PaPedir; < 0 lo disminuye' }
         descripcion: { type: string, example: Comisión 10% del pedido R-000123 }
         pedidoId: { type: string, format: uuid, nullable: true }
@@ -3983,6 +4158,34 @@ components:
             registradoPor: { type: string, format: uuid }
             creadoEn: { type: string, format: date-time }
         - $ref: '#/components/schemas/LiquidacionInput'
+
+    Plan:
+      type: object
+      properties:
+        codigo: { type: string, enum: [basico, pro, premium] }
+        nombre: { type: string, example: Pro }
+        precioMensual: { type: number, example: 199 }
+        comisionPct: { type: number, example: 7 }
+        beneficios: { type: array, items: { type: string } }
+
+    MiPlan:
+      type: object
+      properties:
+        tiendaId: { type: string, format: uuid }
+        plan: { type: string, enum: [basico, pro, premium] }
+        planHasta: { type: string, format: date-time, nullable: true }
+        comisionPct: { type: number, description: La que se aplica hoy (especial de admin → plan → general) }
+        pagos:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string, format: uuid }
+              plan: { type: string }
+              monto: { type: number }
+              inicio: { type: string, format: date-time }
+              fin: { type: string, format: date-time }
+              creadoEn: { type: string, format: date-time }
 
     # ── Tickets ──
     EstadoTicket:
