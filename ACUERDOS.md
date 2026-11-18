@@ -41,7 +41,10 @@ Web Admin/Soporte (React) ─┘          │
 | Push | Firebase Cloud Messaging | — |
 | Web admin/soporte | React + Vite + TypeScript | Vercel (Root Directory = `web`) |
 | Apps móviles | Flutter (Dart 3.6+), Riverpod, dio | APK (`flutter build apk --release`) |
-| Mapas | Mapbox o Google Maps (se decide antes de la semana 6) | — |
+| Mapas (apps) | Google Maps nativo (`google_maps_flutter`) | — |
+| Login de las apps | Firebase Authentication (Google, GitHub, correo) | — |
+| Preferencias y foto de perfil | Cloud Firestore y Firebase Storage | — |
+| Pagos | Stripe (modo prueba) | — |
 
 ### Regla de oro
 
@@ -51,6 +54,8 @@ Web Admin/Soporte (React) ─┘          │
 - La única configuración que conocen los clientes es la URL de la API (`API_URL` / `VITE_API_URL`).
 - La `DATABASE_URL` y el `JWT_SECRET` solo viven en las variables de entorno de Render y en el `.env` local del backend.
 - La única llave permitida en las apps es la del proveedor de mapas, restringida por `applicationId`.
+
+**Excepción (Firebase, solo datos que no son del negocio):** las apps sí usan directo **Firestore** para las preferencias del usuario y **Firebase Storage** para su foto de perfil, siempre con reglas de seguridad por usuario. Pedidos, tiendas, productos, dinero y todo lo demás sigue pasando por la API. La justificación está en la sección 13.
 
 ---
 
@@ -192,18 +197,23 @@ El campo `error` es un código estable; las apps deciden con él, no con el text
 | `LIMITE_SUCURSALES` | Ya tiene 10 sucursales | Aviso |
 | `CUPON_INVALIDO` | Cupón inexistente, vencido, agotado, ya usado o con compra mínima | Mostrar `message` junto al campo del cupón |
 | `CHAT_CERRADO` | Chat de un pedido que ya no está en camino | Deshabilitar el chat |
+| `REGISTRO_REQUERIDO` | Primera vez con Firebase | Mostrar "Completa tu registro" (teléfono, términos, datos de la tienda) |
+| `CORREO_NO_VERIFICADO` | Cuenta de correo de Firebase sin verificar | Pantalla "Revisa tu correo" con botón Reenviar |
+| `FOTO_DEL_PROVEEDOR` | Cuenta de Google/GitHub quiere cambiar su foto | Ocultar el botón (usar `puedeCambiarFoto`) |
+| `CUENTA_FIREBASE` | Cuenta de Firebase usando rutas de contraseña de PaPedir | Usar el SDK de Firebase |
 
 La lista completa está en el schema `Error` de `openapi.yaml`. Todos los valores numéricos (montos, distancias, tiempos) están en la sección de reglas de negocio de la Definición del proyecto.
 
 ### Sesión en las apps
 
-- `POST /auth/login` siempre envía `app` (`cliente`, `tienda`, `repartidor` o `web`). El backend rechaza con 403 si el rol no corresponde a la app.
+- **Las 3 apps móviles entran con Firebase Authentication** (`POST /auth/firebase`, flujo completo en la sección 13). `POST /auth/login` con correo y contraseña de PaPedir queda para la web y para pruebas.
+- Las dos rutas envían `app` (`cliente`, `tienda`, `repartidor` o `web`). El backend rechaza con 403 si el rol no corresponde a la app.
 - `accessToken` dura 15 min y `refreshToken` 7 días.
 - Los tokens se guardan con `flutter_secure_storage`, nunca en `SharedPreferences`.
 - Un interceptor de `dio` en `core` agrega el token y maneja el refresh automáticamente.
 - Después del login se registra el token de FCM con `PUT /usuarios/me/dispositivo`.
 - El registro envía `aceptoTerminos: true` después de mostrar las ligas de `GET /legal`. Si `usuario.terminosPendientes` es `true`, la app pide aceptar los nuevos con `POST /usuarios/me/terminos`.
-- Cuentas (las 3 apps): recuperar contraseña (`/auth/recuperar` → `/auth/restablecer`), verificar correo (opcional), cambiar contraseña, foto de perfil (`/uploads` con `tipo = perfil`), cerrar sesión en todos lados y eliminar cuenta (`DELETE /usuarios/me`). Las tiendas de Apple y Google exigen poder eliminar la cuenta desde la app.
+- Cuentas (las 3 apps): cerrar sesión en todos lados y eliminar cuenta (`DELETE /usuarios/me` con `{ idToken }`). Las tiendas de Apple y Google exigen poder eliminar la cuenta desde la app. Contraseña, verificación del correo y recuperación se hacen con el SDK de Firebase (sección 13); las rutas `/auth/recuperar`, `/auth/verificar-correo` y `PUT /usuarios/me/password` son para cuentas de PaPedir (la web) y a las cuentas de Firebase les responden `CUENTA_FIREBASE`.
 
 ### Sucursales (App Tienda)
 
@@ -328,7 +338,7 @@ Acuerdos:
 
 - Cambios en `core` van en su propio PR y requieren la aprobación de Omar, porque afectan sus apps.
 - Si Omar necesita algo en `core` y Dennis está ocupado, Omar puede hacer el PR y Dennis lo revisa.
-- Gestión de estado: **Riverpod** en las 3 apps. HTTP: **dio**. Modelos: `json_serializable`.
+- Gestión de estado: **Riverpod** en las 3 apps. **Prohibido `setState` y `ValueNotifier`** (lo pide la materia): todo estado, aunque sea de un solo widget, va en un provider (`NotifierProvider`, `StateProvider`, `StreamProvider`...). HTTP: **dio**. Modelos: `json_serializable`.
 - Cada app tiene su `applicationId`, nombre e ícono propios para poder instalarse las 3 en el mismo celular.
 
 Estructura recomendada dentro de cada app:
@@ -537,3 +547,101 @@ Una tarea está terminada cuando:
 | Mendoza Lara Victor Manuel | ☐ | |
 | Mandujano Ávila Omar | ☐ | |
 | Quintana Lazgare Dennis Adrián | ☐ | |
+
+---
+
+## 13. Requisitos de la parte móvil (Desarrollo de Aplicaciones Móviles)
+
+La guía de la materia pide Firebase (Auth, Database, Storage y Cloud Messaging), pagos, sensores y otros puntos de UI. Así se cumplen sin cambiar la arquitectura: Supabase sigue siendo la base del negocio.
+
+### Quién hace qué
+
+Las piezas compartidas van en `core` (Dennis) para no hacerlas 3 veces. Cada quien hace commits de lo suyo: la materia evalúa la autoría en GitHub.
+
+| Requisito | Victor (backend y Firebase) | Dennis (`core` + Repartidor) | Omar (Cliente + Tienda) |
+|---|---|---|---|
+| Firebase Authentication | `POST /auth/firebase` ✅. Activar Google, GitHub y correo en la consola | Login con Google, GitHub y correo; verificar correo, reenviar y recuperar contraseña; pantalla "Completa tu registro" | Usar el login de `core`; en Tienda, los datos de la tienda en el registro |
+| Perfil y foto | Foto del proveedor y regla `puedeCambiarFoto` ✅ | Pantalla de perfil en `core`: avatar del proveedor; subir foto a Firebase Storage solo si `puedeCambiarFoto` | Mostrar el avatar en el dashboard de Cliente y Tienda |
+| Firebase Database | Crear Firestore y pegar las reglas | Repositorio de preferencias en `core` con un `StreamProvider` en tiempo real | Pantalla de ajustes en sus apps (tema, fuente, notificaciones) |
+| Firebase Storage | Crear Storage y pegar las reglas | Subida del avatar en `core` | — |
+| Cloud Messaging | Crear los temas y enviar desde la consola | Listener global y los 3 estados (primer plano, segundo plano, cerrada); suscribirse a temas según las preferencias | Elegir a qué temas se suscribe cada app |
+| Estado sin `setState` | — | Riverpod en `core` y Repartidor | Riverpod en Cliente y Tienda |
+| Fuentes y tema claro/oscuro | — | `theme/` con `google_fonts` y `ThemeMode` leído de las preferencias | Usarlo |
+| Onboarding | — | Widget de onboarding reutilizable en `core` | Pantallas de onboarding de Cliente y Tienda |
+| Responsivo (móvil y escritorio) | — | Repartidor con `LayoutBuilder` | Cliente y Tienda con `LayoutBuilder` (menú lateral en escritorio) |
+| Widget avanzado | — | `DraggableScrollableSheet` sobre el mapa del repartidor | Cliente: `Hero` + `SliverAppBar` en el menú; Tienda: `Slidable` en productos |
+| Caché de imágenes sin conexión | — | `cached_network_image` en los widgets comunes | Usarlo en menú y productos |
+| Sensor | — | Huella (`local_auth`) para confirmar la entrega | Cliente: huella para confirmar el pago. Tienda: agitar el celular (`sensors_plus`) para pausar pedidos |
+| Mapa nativo (sin WebView) | — | `google_maps_flutter`: pedidos disponibles y ruta del viaje | Cliente: tienda y repartidor en vivo. Tienda: su ubicación |
+| Pagos | Stripe en modo prueba: pago de pedidos y planes de tienda (siguiente fase) | — | Cliente: pago con tarjeta (`flutter_stripe`). Tienda: pantalla de planes |
+| Reporte técnico | Arquitectura, backend y la justificación de la sección "Por qué Firebase y Supabase" | Su app y `core` | Sus apps |
+
+### Orden
+
+1. **Victor:** activa Firebase (Auth, Firestore y Storage) y pega las reglas de abajo. ✅ `POST /auth/firebase` ya está.
+2. **Dennis:** login con Firebase, preferencias y push en `core`. Omar y él lo usan en cuanto esté.
+3. **Omar y Dennis:** onboarding, mapa, sensor, widget avanzado y responsivo. No dependen del backend.
+4. **Victor:** pagos con Stripe. **Omar:** pantallas de pago y planes en cuanto el contrato esté publicado.
+
+### Login con Firebase: flujo en la app
+
+```dart
+// 1. Iniciar sesión con Firebase (Google, GitHub o correo)
+final cred = await FirebaseAuth.instance.signInWithProvider(GoogleAuthProvider()); // o GithubAuthProvider(), o signInWithEmailAndPassword
+// 2. Cuentas de correo: si no ha verificado, no dejar pasar
+if (cred.user!.providerData.first.providerId == 'password' && !cred.user!.emailVerified) {
+  await cred.user!.sendEmailVerification();   // botón "Reenviar" = llamar esto otra vez
+  // mostrar "Revisa tu correo"; al volver: await user.reload()
+}
+// 3. Cambiar el token de Firebase por la sesión de PaPedir
+final idToken = await cred.user!.getIdToken();
+final r = await api.post('/auth/firebase', data: {'idToken': idToken, 'app': 'cliente'});
+// 404 REGISTRO_REQUERIDO → pantalla "Completa tu registro" y repetir con:
+//   {'idToken': ..., 'app': 'cliente', 'registro': {'telefono': '4611234567', 'aceptoTerminos': true}}
+// 200 → guardar accessToken y refreshToken como siempre
+```
+
+- Registro con correo: `createUserWithEmailAndPassword` + `sendEmailVerification()`.
+- Recuperar contraseña: `FirebaseAuth.instance.sendPasswordResetEmail(email: ...)`.
+- Eliminar cuenta: `DELETE /usuarios/me` con `{ "idToken": <token reciente> }`; el backend también la borra de Firebase.
+- Cerrar sesión: `POST /auth/logout` y `FirebaseAuth.instance.signOut()`.
+
+### Firestore: preferencias del usuario
+
+Un documento por usuario de Firebase (`uid`):
+
+```
+usuarios/{uid}
+  tema: "sistema" | "claro" | "oscuro"
+  fuente: "normal" | "grande"
+  onboardingVisto: true
+  temasFCM: ["promociones", "novedades"]
+  notificaciones: { pedidos: true, promociones: false, chat: true }
+  busquedasRecientes: ["tacos", "farmacia"]     // solo Cliente, máximo 10
+```
+
+- Se escucha con `snapshots()` en un `StreamProvider`: si cambia en un dispositivo, se ve en el otro al instante (sirve para la demo).
+- Firestore guarda una copia en el dispositivo, así que el tema y el onboarding funcionan sin internet y antes de iniciar sesión (con el último usuario).
+- Aquí **nunca** van datos del negocio (pedidos, direcciones, carrito, dinero).
+
+### Firebase Storage: foto de perfil
+
+- Ruta: `avatares/{uid}.jpg`. Solo si `usuario.puedeCambiarFoto` es `true` (cuentas de correo).
+- Después de subirla: `PATCH /usuarios/me` con `{ "fotoUrl": await ref.getDownloadURL() }`.
+- Las fotos de productos, tiendas, evidencias y documentos siguen yendo por `POST /uploads` y `POST /documentos`.
+
+### Cloud Messaging: temas
+
+| Tema | Quién se suscribe | Para qué (se envía desde la consola de Firebase) |
+|---|---|---|
+| `novedades` | Todas las apps | Avisos generales de PaPedir |
+| `promociones` | Cliente, si lo activa en ajustes | Cupones y promociones |
+| `tiendas` | App Tienda | Avisos para tiendas |
+| `repartidores` | App Repartidor | Avisos para repartidores (lluvia, alta demanda) |
+
+- Listener global en la raíz de la app: `FirebaseMessaging.onMessage` (primer plano, mostrar con `flutter_local_notifications`), `onMessageOpenedApp` (segundo plano) y `getInitialMessage()` (app cerrada). Más `onBackgroundMessage` como función de nivel superior.
+- Los avisos de pedidos que manda el backend (aceptado, en camino...) siguen llegando por token de dispositivo; se manejan con el mismo listener y abren la pantalla del pedido con `data.pedidoId`.
+
+### Por qué Firebase y Supabase (para el reporte)
+
+Los datos del negocio (pedidos, tiendas, productos, dinero) necesitan transacciones, relaciones, reglas validadas en el servidor y consultas geográficas: viven en PostgreSQL (Supabase) y solo se tocan por la API. Las preferencias son un documento pequeño por usuario, sin relaciones, que se lee al arrancar la app, debe sincronizarse en tiempo real entre dispositivos y funcionar sin conexión: Firestore lo resuelve con su SDK y con reglas por usuario ligadas a Firebase Auth, sin cargar la API. Ningún dato se duplica entre las dos bases.

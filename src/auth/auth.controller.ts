@@ -3,7 +3,7 @@ import { Throttle } from '@nestjs/throttler';
 import { Actor, Publico } from '../common/auth';
 import { Usuario } from '../database/entities';
 import {
-  CambiarPasswordDto, CodigoDto, ConfirmarPasswordDto, DispositivoDto, LoginDto, PerfilDto, RecuperarDto, RefreshDto, RegistroDto,
+  CambiarPasswordDto, CodigoDto, ConfirmarPasswordDto, DispositivoDto, LoginDto, LoginFirebaseDto, PerfilDto, RecuperarDto, RefreshDto, RegistroDto,
   RestablecerDto, TerminosDto,
 } from './auth.dto';
 import { AuthService, vistaUsuario } from './auth.service';
@@ -24,6 +24,13 @@ export class AuthController {
   @Post('auth/login') @HttpCode(200)
   login(@Body() dto: LoginDto) {
     return this.auth.login(dto);
+  }
+
+  /** Apps móviles: entrar (o registrarse la primera vez) con Firebase Authentication. */
+  @Publico() @Throttle(ESTRICTO)
+  @Post('auth/firebase') @HttpCode(200)
+  loginFirebase(@Body() dto: LoginFirebaseDto) {
+    return this.auth.loginFirebase(dto);
   }
 
   @Publico()
@@ -96,7 +103,7 @@ export class AuthController {
   @Throttle(ESTRICTO)
   @Delete('usuarios/me') @HttpCode(204)
   eliminar(@Actor() u: Usuario, @Body() dto: ConfirmarPasswordDto) {
-    return this.auth.eliminarCuenta(u, dto.password);
+    return this.auth.eliminarCuenta(u, dto);
   }
 
   @Put('usuarios/me/dispositivo') @HttpCode(204)
