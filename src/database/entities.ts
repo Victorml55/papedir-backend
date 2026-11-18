@@ -32,6 +32,10 @@ export class Usuario {
   @Column({ type: 'int', default: 0 }) intentosFallidos: number;
   @Column({ ...fecha, nullable: true }) bloqueadoHasta: Date | null;
   @Column({ ...fecha, nullable: true }) eliminadoEn: Date | null;
+  /** Usuario de Firebase Authentication con el que entra a las apps (null = solo correo y contraseña de PaPedir). */
+  @Column({ type: 'text', nullable: true, unique: true }) firebaseUid: string | null;
+  /** local (correo y contraseña de PaPedir), password (correo de Firebase), google.com, github.com... */
+  @Column({ type: 'text', default: 'local' }) proveedor: string;
   /** Solo repartidores: promedio de las calificaciones de los clientes. */
   @Column({ type: 'numeric', precision: 3, scale: 2, nullable: true, transformer: dinero.transformer }) calificacion: number | null;
   @CreateDateColumn(fecha) creadoEn: Date;

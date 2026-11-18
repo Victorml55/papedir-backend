@@ -66,8 +66,28 @@ export class CambiarPasswordDto {
   @IsString() @MinLength(8) @MaxLength(72) nueva: string;
 }
 
+/** Para eliminar la cuenta: la contraseña, o un ID token reciente de Firebase si la cuenta entra con Firebase. */
 export class ConfirmarPasswordDto {
-  @IsString() @IsNotEmpty() password: string;
+  @ValidateIf((o) => !o.idToken) @IsString() @IsNotEmpty() password?: string;
+  @IsOptional() @IsString() @IsNotEmpty() idToken?: string;
+}
+
+/** Datos que pide la app la primera vez que alguien entra con Firebase (Google no da teléfono ni rol). */
+export class RegistroFirebaseDto {
+  /** Si se omite, se usa el nombre de la cuenta de Google o GitHub. */
+  @IsOptional() @IsString() @IsNotEmpty() @MaxLength(80) nombre?: string;
+  @Matches(TELEFONO, { message: 'telefono debe tener 10 dígitos' }) telefono: string;
+  @Equals(true, { message: 'Debes aceptar el aviso de privacidad y los términos para crear tu cuenta' }) aceptoTerminos: boolean;
+  /** Obligatorio en la app tienda. */
+  @IsOptional() @ValidateNested() @Type(() => TiendaRegistroDto) tienda?: TiendaRegistroDto;
+}
+
+export class LoginFirebaseDto {
+  /** ID token de Firebase Authentication (user.getIdToken()). */
+  @IsString() @IsNotEmpty() idToken: string;
+  @IsIn(['cliente', 'tienda', 'repartidor']) app: 'cliente' | 'tienda' | 'repartidor';
+  /** Solo la primera vez (cuando la API respondió 404 REGISTRO_REQUERIDO). */
+  @IsOptional() @ValidateNested() @Type(() => RegistroFirebaseDto) registro?: RegistroFirebaseDto;
 }
 
 export class TerminosDto {

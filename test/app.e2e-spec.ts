@@ -18,6 +18,7 @@ import { DataSource } from 'typeorm';
 import { AppModule } from '../src/app.module';
 import { configurar } from '../src/main';
 import { CorreoService } from '../src/nucleo/correo.service';
+import { FirebaseService, IdentidadFirebase } from '../src/nucleo/firebase.service';
 import { TareasService } from '../src/pedidos/tareas.service';
 
 const PASS = 'PaPedir123!';
@@ -1142,6 +1143,92 @@ describe('PaPedir API', () => {
       expect(despues.data.map((n) => n.id)).not.toContain(respuesta.id);
       await api('post', '/notificaciones/leer-todas', 'cliente').expect(204);
       expect((await api('get', '/notificaciones', 'cliente')).body.noLeidas).toBe(0);
+    });
+  });
+
+  describe('Login con Firebase (apps móviles)', () => {
+    // Tokens simulados: en producción Firebase firma el token y firebase-admin lo valida.
+    const cuentas: Record<string, IdentidadFirebase> = {
+      google: { uid: 'g-1', email: 'ana.google@gmail.com', emailVerificado: true, nombre: 'Ana Google', foto: 'https://lh3.test/ana.jpg', proveedor: 'google.com' },
+      github: { uid: 'gh-1', email: 'tienda.github@prueba.test', emailVerificado: true, nombre: 'Tienda GH', foto: 'https://avatars.test/t.png', proveedor: 'github.com' },
+      sinVerificar: { uid: 'p-1', email: 'nuevo.correo@prueba.test', emailVerificado: false, nombre: null, foto: null, proveedor: 'password' },
+      correo: { uid: 'p-2', email: 'ligar@prueba.test', emailVerificado: true, nombre: null, foto: null, proveedor: 'password' },
+      intruso: { uid: 'gh-2', email: 'cliente@prueba.test', emailVerificado: false, nombre: 'X', foto: null, proveedor: 'github.com' },
+    };
+    const entrar = (token: string, app = 'cliente', registro?: any) => api('post', '/auth/firebase', undefined, { idToken: token, app, registro });
+    const registro = { telefono: '4611234567', aceptoTerminos: true };
+
+    it('sin Firebase configurado responde 503', async () => {
+      expect((await entrar('google').expect(503)).body.error).toBe('FIREBASE_NO_CONFIGURADO');
+      const fb = app.get(FirebaseService);
+      fb.verificar = async (t: string) => {
+        if (!cuentas[t]) throw Object.assign(new Error(), { getStatus: () => 401 });
+        return cuentas[t];
+      };
+    });
+
+    it('rechaza tokens inválidos y correos sin verificar', async () => {
+      await entrar('basura').expect((r) => expect(r.status).toBeGreaterThanOrEqual(400));
+      expect((await entrar('sinVerificar').expect(403)).body.error).toBe('CORREO_NO_VERIFICADO');
+      await entrar('google', 'web').expect(400);
+    });
+
+    it('la primera vez pide completar el registro y luego entra directo', async () => {
+      expect((await entrar('google').expect(404)).body.error).toBe('REGISTRO_REQUERIDO');
+      await entrar('google', 'cliente', { telefono: '4611234567' }).expect(400); // falta aceptar términos
+      const r = (await entrar('google', 'cliente', registro).expect(200)).body;
+      expect(r.usuario).toMatchObject({
+        nombre: 'Ana Google', email: 'ana.google@gmail.com', rol: 'cliente', estado: 'activo', proveedor: 'google.com',
+        fotoUrl: 'https://lh3.test/ana.jpg', emailVerificado: true, terminosPendientes: false, puedeCambiarFoto: false,
+      });
+      tok.google = r.accessToken;
+      id.google = r.usuario.id;
+      const otra = (await entrar('google').expect(200)).body;
+      expect(otra.usuario.id).toBe(id.google);
+      expect((await api('get', '/auth/me', 'google').expect(200)).body.email).toBe('ana.google@gmail.com');
+      expect((await entrar('google', 'repartidor').expect(403)).body.error).toBe('APP_INCORRECTA');
+    });
+
+    it('la foto viene del proveedor y solo las cuentas de correo la pueden cambiar', async () => {
+      expect((await api('patch', '/usuarios/me', 'google', { fotoUrl: 'https://x.test/y.jpg' }).expect(403)).body.error).toBe('FOTO_DEL_PROVEEDOR');
+      await api('patch', '/usuarios/me', 'google', { nombre: 'Ana G.' }).expect(200); // lo demás sí
+      cuentas.google.foto = 'https://lh3.test/ana-nueva.jpg';
+      expect((await entrar('google').expect(200)).body.usuario.fotoUrl).toBe('https://lh3.test/ana-nueva.jpg');
+    });
+
+    it('una tienda se registra con GitHub y queda en revisión', async () => {
+      await entrar('github', 'tienda', registro).expect(400); // faltan los datos de la tienda
+      const r = (await entrar('github', 'tienda', { ...registro, tienda: { nombre: 'Tienda GH', categoria: 'otros', direccion: 'Calle 2', ubicacion: TIENDA } }).expect(200)).body;
+      expect(r.usuario).toMatchObject({ rol: 'tienda', estado: 'pendiente_aprobacion', proveedor: 'github.com' });
+      tok.github = r.accessToken;
+      expect((await api('get', '/tiendas/mia', 'github').expect(200)).body.nombre).toBe('Tienda GH');
+    });
+
+    it('liga una cuenta existente solo si el correo está verificado', async () => {
+      await registrar('ligar', 'cliente');
+      const r = (await entrar('correo').expect(200)).body;
+      expect(r.usuario).toMatchObject({ id: id.ligar, proveedor: 'password', puedeCambiarFoto: true });
+      tok.ligar = r.accessToken;
+      await api('patch', '/usuarios/me', 'ligar', { fotoUrl: 'https://x.test/mia.jpg' }).expect(200);
+      expect((await entrar('intruso').expect(409)).body.error).toBe('EMAIL_REGISTRADO'); // GitHub sin correo verificado
+      const eventos = (await api('get', `/soporte/usuarios/${id.ligar}/eventos`, 'soporte')).body.map((e) => e.tipo);
+      expect(eventos).toContain('ligada_firebase');
+    });
+
+    it('las cuentas de Firebase manejan contraseña y correo en Firebase', async () => {
+      expect((await api('put', '/usuarios/me/password', 'google', { actual: 'x', nueva: 'OtraClave2026' }).expect(409)).body.error).toBe('CUENTA_FIREBASE');
+      expect((await api('post', '/auth/verificar-correo/reenviar', 'ligar').expect(409)).body.error).toBe('CUENTA_FIREBASE');
+      const antes = app.get(CorreoService).enviados.length;
+      await api('post', '/auth/recuperar', undefined, { email: 'ana.google@gmail.com' }).expect(204);
+      expect(app.get(CorreoService).enviados.length).toBe(antes);
+    });
+
+    it('elimina la cuenta confirmando con su token de Firebase', async () => {
+      await api('delete', '/usuarios/me', 'google', { idToken: 'github' }).expect(403); // token de otra cuenta
+      await api('delete', '/usuarios/me', 'google', {}).expect(400);
+      await api('delete', '/usuarios/me', 'google', { idToken: 'google' }).expect(204);
+      await api('get', '/auth/me', 'google').expect(401);
+      expect((await entrar('google').expect(404)).body.error).toBe('REGISTRO_REQUERIDO'); // empieza de cero
     });
   });
 

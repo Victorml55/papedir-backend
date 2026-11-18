@@ -3,15 +3,16 @@ import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcryptjs';
 import { createHash, randomBytes, randomInt, timingSafeEqual } from 'crypto';
-import { DataSource, In, IsNull, MoreThan, Not, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, IsNull, MoreThan, Not, Repository } from 'typeorm';
 import { AppError, conflicto, invalido, sinPermiso } from '../common/errores';
 import { ESTADOS_FINALES, REGLAS, Rol } from '../config/reglas';
 import { CodigoVerificacion, Direccion, Dispositivo, Documento, Pedido, RefreshToken, Tienda, Usuario, Vehiculo, Viaje } from '../database/entities';
 import { AlmacenService } from '../nucleo/almacen.service';
+import { FirebaseService } from '../nucleo/firebase.service';
 import { BitacoraCuentasService } from '../nucleo/bitacora-cuentas.service';
 import { CorreoService } from '../nucleo/correo.service';
 import { RealtimeService } from '../nucleo/realtime.service';
-import { DispositivoDto, LoginDto, PerfilDto, RegistroDto } from './auth.dto';
+import { DispositivoDto, LoginDto, LoginFirebaseDto, PerfilDto, RegistroDto, TiendaRegistroDto } from './auth.dto';
 
 /** Qué roles pueden entrar a cada app. */
 const ROLES_POR_APP: Record<string, Rol[]> = {
@@ -37,8 +38,21 @@ export const vistaUsuario = (u: Usuario) => ({
   emailVerificado: !!u.emailVerificadoEn,
   terminosPendientes: u.terminosVersion !== REGLAS.legal.versionTerminos,
   calificacion: u.calificacion ?? null,
+  /** local (correo de PaPedir), password (correo de Firebase), google.com, github.com... */
+  proveedor: u.proveedor ?? 'local',
+  /** Solo las cuentas de correo pueden cambiar su foto; las de Google o GitHub usan la del proveedor. */
+  puedeCambiarFoto: fotoEditable(u),
   creadoEn: u.creadoEn,
 });
+
+const fotoEditable = (u: Usuario) => !u.proveedor || u.proveedor === 'local' || u.proveedor === 'password';
+
+/** Las cuentas que entran con Firebase manejan su contraseña y su correo en Firebase, no aquí. */
+const exigirCuentaLocal = (u: Usuario) => {
+  if (u.firebaseUid) {
+    throw conflicto('CUENTA_FIREBASE', 'Tu cuenta usa el inicio de sesión de la app; cámbialo desde ahí (Firebase)');
+  }
+};
 
 @Injectable()
 export class AuthService {
@@ -49,6 +63,7 @@ export class AuthService {
     private readonly bitacora: BitacoraCuentasService,
     private readonly rt: RealtimeService,
     private readonly almacen: AlmacenService,
+    private readonly firebase: FirebaseService,
     @InjectRepository(Usuario) private readonly usuarios: Repository<Usuario>,
     @InjectRepository(RefreshToken) private readonly refresh: Repository<RefreshToken>,
     @InjectRepository(Dispositivo) private readonly dispositivos: Repository<Dispositivo>,
@@ -75,25 +90,102 @@ export class AuthService {
           terminosAceptadosEn: new Date(),
         }),
       );
-      if (dto.rol === 'tienda') {
-        await m.save(
-          m.create(Tienda, {
-            ownerId: u.id,
-            nombre: dto.tienda.nombre.trim(),
-            categoria: dto.tienda.categoria,
-            direccion: dto.tienda.direccion,
-            telefono: dto.telefono,
-            lat: dto.tienda.ubicacion.lat,
-            lng: dto.tienda.ubicacion.lng,
-          }),
-        );
-      }
+      if (dto.rol === 'tienda') await this.crearTienda(m, u, dto.tienda, dto.telefono);
       await this.bitacora.registrar(u.id, 'registrada', u, `Aceptó términos ${REGLAS.legal.versionTerminos}`, m);
       return u;
     });
     // Si el correo falla, la cuenta se crea igual: puede pedir otro código después.
     await this.enviarCodigo(usuario, 'verificar_email').catch(() => false);
     return this.sesion(usuario);
+  }
+
+  private crearTienda(m: EntityManager, u: Usuario, t: TiendaRegistroDto, telefono: string) {
+    return m.save(
+      m.create(Tienda, {
+        ownerId: u.id, nombre: t.nombre.trim(), categoria: t.categoria, direccion: t.direccion, telefono,
+        lat: t.ubicacion.lat, lng: t.ubicacion.lng,
+      }),
+    );
+  }
+
+  /**
+   * Inicio de sesión de las apps con Firebase Authentication (Google, GitHub o correo y contraseña).
+   * Firebase se encarga de la contraseña, la verificación del correo y la recuperación; aquí se valida
+   * el token y se entrega la sesión de PaPedir de siempre (accessToken + refreshToken).
+   * 1. Cuenta ya ligada (firebaseUid) → entra.
+   * 2. Existe una cuenta con ese correo verificado → se liga a Firebase y entra.
+   * 3. No existe → 404 REGISTRO_REQUERIDO; la app pide teléfono, términos (y datos de la tienda) y vuelve a llamar con `registro`.
+   */
+  async loginFirebase(dto: LoginFirebaseDto) {
+    const f = await this.firebase.verificar(dto.idToken);
+    if (!f.email) throw invalido('Tu cuenta de Firebase no tiene correo; usa otro método para entrar', 'idToken');
+    // Requisito: las cuentas de correo deben verificarlo antes de entrar.
+    if (f.proveedor === 'password' && !f.emailVerificado) {
+      throw sinPermiso('Verifica tu correo con el enlace que te enviamos antes de entrar', 'CORREO_NO_VERIFICADO');
+    }
+
+    let u = await this.usuarios.findOneBy({ firebaseUid: f.uid });
+    if (!u) {
+      const mismoCorreo = await this.usuarios.findOneBy({ email: f.email });
+      if (mismoCorreo) {
+        // Solo se liga si Firebase garantiza que el correo es suyo; si no, alguien podría tomar una cuenta ajena.
+        if (mismoCorreo.firebaseUid || !f.emailVerificado) {
+          throw conflicto('EMAIL_REGISTRADO', 'Ese correo ya tiene una cuenta; entra con tu correo y contraseña');
+        }
+        u = mismoCorreo;
+        u.firebaseUid = f.uid;
+        u.proveedor = f.proveedor;
+        await this.usuarios.update(u.id, { firebaseUid: f.uid, proveedor: f.proveedor });
+        await this.bitacora.registrar(u.id, 'ligada_firebase', u, f.proveedor);
+      }
+    }
+
+    if (!u) {
+      if (!dto.registro) {
+        throw new AppError(404, 'REGISTRO_REQUERIDO', 'Completa tu registro para continuar', [
+          { campo: 'registro', mensaje: 'Primera vez: manda teléfono y aceptoTerminos (y tienda en la app de tiendas)' },
+        ]);
+      }
+      if (dto.app === 'tienda' && !dto.registro.tienda) throw invalido('tienda es obligatorio en la app de tiendas', 'registro.tienda');
+      const r = dto.registro;
+      u = await this.ds.transaction(async (m) => {
+        const nuevo = await m.save(
+          m.create(Usuario, {
+            nombre: (r.nombre ?? f.nombre ?? f.email.split('@')[0]).trim().slice(0, 80),
+            email: f.email,
+            telefono: r.telefono,
+            rol: dto.app,
+            // Nunca se usa: la contraseña la maneja Firebase.
+            passwordHash: await bcrypt.hash(randomBytes(32).toString('hex'), 4),
+            estado: dto.app === 'cliente' ? 'activo' : 'pendiente_aprobacion',
+            terminosVersion: REGLAS.legal.versionTerminos,
+            terminosAceptadosEn: new Date(),
+            emailVerificadoEn: f.emailVerificado ? new Date() : null,
+            fotoUrl: f.foto,
+            firebaseUid: f.uid,
+            proveedor: f.proveedor,
+          }),
+        );
+        if (dto.app === 'tienda') await this.crearTienda(m, nuevo, r.tienda, r.telefono);
+        await this.bitacora.registrar(nuevo.id, 'registrada', nuevo, `Con Firebase (${f.proveedor}); aceptó términos ${REGLAS.legal.versionTerminos}`, m);
+        return nuevo;
+      });
+      return this.sesion(u);
+    }
+
+    if (u.estado === 'eliminado') throw new AppError(401, 'NO_AUTENTICADO', 'Esta cuenta fue eliminada');
+    if (u.estado === 'baneado') throw sinPermiso('Tu cuenta fue suspendida', 'CUENTA_BANEADA');
+    if (!ROLES_POR_APP[dto.app].includes(u.rol)) throw sinPermiso('Esta cuenta no corresponde a esta aplicación', 'APP_INCORRECTA');
+
+    // La foto se sincroniza con la del proveedor (Google, GitHub); las cuentas de correo conservan la suya.
+    const cambios: Partial<Usuario> = {};
+    if (!fotoEditable(u) && f.foto && f.foto !== u.fotoUrl) cambios.fotoUrl = f.foto;
+    if (f.emailVerificado && !u.emailVerificadoEn) cambios.emailVerificadoEn = new Date();
+    if (Object.keys(cambios).length) {
+      await this.usuarios.update(u.id, cambios);
+      Object.assign(u, cambios);
+    }
+    return this.sesion(u);
   }
 
   async login(dto: LoginDto) {
@@ -194,7 +286,8 @@ export class AuthService {
   /** Siempre responde igual, exista o no el correo, para no revelar qué cuentas existen. */
   async solicitarRecuperacion(email: string) {
     const u = await this.usuarios.findOneBy({ email: email.toLowerCase().trim() });
-    if (u && u.estado !== 'eliminado' && u.estado !== 'baneado') await this.enviarCodigo(u, 'recuperar_password');
+    // Las cuentas de Firebase recuperan su contraseña con Firebase (sendPasswordResetEmail).
+    if (u && !u.firebaseUid && u.estado !== 'eliminado' && u.estado !== 'baneado') await this.enviarCodigo(u, 'recuperar_password');
   }
 
   async restablecer(email: string, codigo: string, password: string) {
@@ -224,6 +317,7 @@ export class AuthService {
   }
 
   async reenviarVerificacion(u: Usuario) {
+    exigirCuentaLocal(u);
     if (u.emailVerificadoEn) throw conflicto('CORREO_YA_VERIFICADO', 'Tu correo ya está verificado');
     if (!(await this.enviarCodigo(u, 'verificar_email'))) {
       throw new AppError(429, 'DEMASIADAS_PETICIONES', 'Ya te enviamos varios códigos; espera una hora o revisa tu bandeja de spam');
@@ -235,12 +329,18 @@ export class AuthService {
   async actualizarPerfil(usuario: Usuario, dto: PerfilDto) {
     if (dto.nombre !== undefined) usuario.nombre = dto.nombre.trim();
     if (dto.telefono !== undefined) usuario.telefono = dto.telefono;
-    if (dto.fotoUrl !== undefined) usuario.fotoUrl = dto.fotoUrl || null;
+    if (dto.fotoUrl !== undefined) {
+      if (!fotoEditable(usuario)) {
+        throw sinPermiso('Tu foto es la de tu cuenta de Google o GitHub; cámbiala ahí', 'FOTO_DEL_PROVEEDOR');
+      }
+      usuario.fotoUrl = dto.fotoUrl || null;
+    }
     return vistaUsuario(await this.usuarios.save(usuario));
   }
 
   /** Cambia la contraseña, cierra las demás sesiones y devuelve tokens nuevos para este dispositivo. */
   async cambiarPassword(u: Usuario, actual: string, nueva: string) {
+    exigirCuentaLocal(u);
     if (!(await bcrypt.compare(actual, u.passwordHash))) throw sinPermiso('La contraseña actual no es correcta', 'PASSWORD_INCORRECTA');
     if (actual === nueva) throw invalido('La contraseña nueva debe ser distinta de la actual', 'nueva');
     await this.usuarios.update(u.id, { passwordHash: await bcrypt.hash(nueva, 10) });
@@ -272,8 +372,14 @@ export class AuthService {
    * Elimina la cuenta: borra sus datos personales y la deja anónima. Los pedidos y tickets
    * se conservan (sin datos personales) para la contabilidad y para soporte.
    */
-  async eliminarCuenta(u: Usuario, password: string) {
-    if (!(await bcrypt.compare(password, u.passwordHash))) throw sinPermiso('La contraseña no es correcta', 'PASSWORD_INCORRECTA');
+  /** Confirma con la contraseña de PaPedir o, en cuentas de Firebase, con un ID token de esa misma cuenta. */
+  async eliminarCuenta(u: Usuario, confirmacion: { password?: string; idToken?: string }) {
+    if (confirmacion.idToken) {
+      const f = await this.firebase.verificar(confirmacion.idToken);
+      if (f.uid !== u.firebaseUid) throw sinPermiso('Ese inicio de sesión no corresponde a tu cuenta', 'PASSWORD_INCORRECTA');
+    } else if (!(await bcrypt.compare(confirmacion.password ?? '', u.passwordHash))) {
+      throw sinPermiso('La contraseña no es correcta', 'PASSWORD_INCORRECTA');
+    }
     const activos = { estado: Not(In(ESTADOS_FINALES)) };
     const tiendas = u.rol === 'tienda' ? await this.ds.getRepository(Tienda).findBy({ ownerId: u.id }) : [];
     const pendientes =
@@ -299,6 +405,7 @@ export class AuthService {
         lat: null,
         lng: null,
         motivoBaneo: null,
+        firebaseUid: null,
       });
       if (tiendas.length) await m.update(Tienda, { ownerId: u.id }, { abierta: false, telefono: null });
       // Sus pedidos anteriores se conservan, pero sin su nombre ni su teléfono.
@@ -315,6 +422,7 @@ export class AuthService {
     });
     // INE, licencia...: también se borran los archivos.
     void this.almacen.borrarPrivados(documentos.map((d) => d.ruta));
+    if (u.firebaseUid) void this.firebase.borrarUsuario(u.firebaseUid);
     this.rt.desconectar(u.id);
   }
 

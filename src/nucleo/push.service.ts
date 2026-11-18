@@ -1,10 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { cert, getApps, initializeApp } from 'firebase-admin/app';
 import { getMessaging, Messaging } from 'firebase-admin/messaging';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { Dispositivo, Notificacion, Usuario } from '../database/entities';
 import { Rol } from '../config/reglas';
+import { FirebaseService } from './firebase.service';
 import { RealtimeService } from './realtime.service';
 
 /**
@@ -22,17 +22,9 @@ export class PushService {
     @InjectRepository(Usuario) private readonly usuarios: Repository<Usuario>,
     @InjectRepository(Notificacion) private readonly bandeja: Repository<Notificacion>,
     private readonly rt: RealtimeService,
+    firebase: FirebaseService,
   ) {
-    const b64 = process.env.FIREBASE_SERVICE_ACCOUNT_BASE64;
-    if (!b64) return;
-    try {
-      const cuenta = JSON.parse(Buffer.from(b64, 'base64').toString('utf8'));
-      const app = getApps().find((a) => a.name === 'papedir') ?? initializeApp({ credential: cert(cuenta) }, 'papedir');
-      this.mensajeria = getMessaging(app);
-      this.log.log(`Firebase listo (proyecto ${cuenta.project_id})`);
-    } catch (e) {
-      this.log.error(`No se pudo iniciar Firebase: ${e.message}`);
-    }
+    if (firebase.app) this.mensajeria = getMessaging(firebase.app);
   }
 
   async aUsuarios(ids: (string | null | undefined)[], titulo: string, cuerpo: string, data: Record<string, string> = {}) {

@@ -156,6 +156,46 @@ DATABASE_URL="<transaction pooler>" DATABASE_SSL=true npm run verificar
 
 El JSON de la cuenta de servicio es una llave: no lo subas al repositorio ni lo mandes por el grupo; bórralo después de convertirlo.
 
+#### Authentication, Firestore y Storage (requisitos de la app móvil)
+
+Con la misma cuenta de servicio, la API ya valida el login de las apps (`POST /auth/firebase`). En la consola:
+
+1. **Authentication → Sign-in method:** activa **Correo electrónico/contraseña**, **Google** y **GitHub**.
+   - Google en Android necesita la huella **SHA-1** de cada app: cada quien la saca con `cd android && ./gradlew signingReport` y la agrega en **Configuración del proyecto → Tus apps**. Después hay que volver a descargar el `google-services.json`.
+   - GitHub: en GitHub → **Settings → Developer settings → OAuth Apps → New**, usa como *callback URL* la que muestra Firebase, y pega en Firebase el *Client ID* y el *Client secret*.
+   - En **Templates** cambia el idioma de los correos (verificación y contraseña) a español.
+2. **Firestore Database → Crear base de datos** (modo producción, región `us-central1` o la más cercana) y en **Reglas** pega:
+
+   ```
+   rules_version = '2';
+   service cloud.firestore {
+     match /databases/{database}/documents {
+       match /usuarios/{uid} {
+         allow read, write: if request.auth != null && request.auth.uid == uid;
+       }
+     }
+   }
+   ```
+
+3. **Storage → Comenzar** y en **Reglas** pega:
+
+   ```
+   rules_version = '2';
+   service firebase.storage {
+     match /b/{bucket}/o {
+       match /avatares/{uid}.jpg {
+         allow read: if request.auth != null;
+         allow write: if request.auth != null && request.auth.uid == uid
+                      && request.resource.size < 5 * 1024 * 1024
+                      && request.resource.contentType.matches('image/.*');
+       }
+     }
+   }
+   ```
+
+   Storage pide el plan Blaze (de pago por uso) en proyectos nuevos; con el uso del proyecto queda dentro de la capa gratuita, pero conviene poner una **alerta de presupuesto** de $1 USD en Google Cloud.
+4. **Messaging:** las campañas a temas (`novedades`, `promociones`, `tiendas`, `repartidores`) se mandan desde **Messaging → Nueva campaña → Notificaciones → Tema**.
+
 ### 5. Resend (correos con códigos)
 
 La API manda por correo los códigos para verificar el correo y para recuperar la contraseña. Sin configurar, la API funciona igual y los códigos solo aparecen en el log de Render.
