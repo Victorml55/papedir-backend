@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: PaPedir API
-  version: 1.3.0
+  version: 1.4.0
   description: |
     Contrato de la API de PaPedir, plataforma de reparto a domicilio en Celaya, Gto.
 
@@ -142,6 +142,54 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '403': { $ref: '#/components/responses/Forbidden' }
+
+  /auth/firebase:
+    post:
+      operationId: loginFirebase
+      tags: [Auth]
+      summary: Entrar a las apps con Firebase Authentication (Google, GitHub o correo)
+      description: |
+        La app inicia sesión con el SDK de Firebase y manda el ID token (`await user.getIdToken()`).
+        La API lo valida y devuelve la sesión de PaPedir de siempre; el resto de la API no cambia.
+        - Cuentas de correo y contraseña: el correo debe estar verificado (403 `CORREO_NO_VERIFICADO`).
+          El envío del correo de verificación, su reenvío y la recuperación de contraseña los hace el SDK de Firebase.
+        - Primera vez: responde 404 `REGISTRO_REQUERIDO`; la app pide teléfono y aceptar términos
+          (y los datos de la tienda en la app de tiendas) y vuelve a llamar con `registro`.
+        - Si ya existe una cuenta de PaPedir con ese correo y Firebase lo da por verificado, se ligan.
+        - La foto de Google o GitHub se guarda en `fotoUrl` y se actualiza en cada inicio de sesión.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginFirebaseRequest' }
+      responses:
+        '200':
+          description: Sesión iniciada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401':
+          description: Token de Firebase inválido o vencido
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: Correo sin verificar, cuenta baneada o app que no corresponde a la cuenta
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: Primera vez; falta `registro` (`REGISTRO_REQUERIDO`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: El correo ya tiene una cuenta que no se puede ligar (`EMAIL_REGISTRADO`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /auth/refresh:
     post:
@@ -2840,7 +2888,8 @@ components:
             REPARTIDOR_DESCONECTADO, CATEGORIA_CON_PRODUCTOS, TICKET_CERRADO, DEMASIADAS_PETICIONES, ERROR_INTERNO,
             CUENTA_BLOQUEADA, CODIGO_INVALIDO, PASSWORD_INCORRECTA, CORREO_YA_VERIFICADO, VERSION_TERMINOS,
             TIENE_PEDIDOS_ACTIVOS, ULTIMO_ADMIN, LIMITE_SUCURSALES, DOCUMENTO_APROBADO, DOCUMENTOS_INCOMPLETOS,
-            CUPON_INVALIDO, CUPON_DUPLICADO, CHAT_CERRADO
+            CUPON_INVALIDO, CUPON_DUPLICADO, CHAT_CERRADO, CORREO_NO_VERIFICADO, REGISTRO_REQUERIDO, CUENTA_FIREBASE,
+            FOTO_DEL_PROVEEDOR, FIREBASE_NO_CONFIGURADO
           example: PEDIDO_YA_TOMADO
         message: { type: string, example: El pedido ya fue tomado por otro repartidor }
         detalles:
@@ -2948,6 +2997,13 @@ components:
           nullable: true
           description: Solo repartidores, promedio de 1 a 5
           example: 4.8
+        proveedor:
+          type: string
+          example: google.com
+          description: local (correo de PaPedir), password (correo de Firebase), google.com, github.com
+        puedeCambiarFoto:
+          type: boolean
+          description: Solo las cuentas de correo; las de Google o GitHub usan la foto del proveedor
         creadoEn: { type: string, format: date-time }
 
     UsuarioDetalle:
@@ -2990,7 +3046,7 @@ components:
           description: |
             registrada, creada_por_admin, aprobada, baneada, desbaneada, bloqueada, desbloqueada,
             password_cambiada, password_restablecida, correo_verificado, terminos_aceptados, eliminada,
-            documento_aprobado, documento_rechazado
+            documento_aprobado, documento_rechazado, ligada_firebase
           example: bloqueada
         actorId: { type: string, format: uuid, nullable: true, description: Quién lo hizo; null si fue el sistema }
         actorRol:
@@ -3015,9 +3071,28 @@ components:
 
     ConfirmarPasswordRequest:
       type: object
-      required: [password]
+      description: La contraseña o, en cuentas que entran con Firebase, un ID token de esa misma cuenta
       properties:
         password: { type: string }
+        idToken: { type: string }
+
+    LoginFirebaseRequest:
+      type: object
+      required: [idToken, app]
+      properties:
+        idToken: { type: string, description: ID token de Firebase Authentication }
+        app:
+          type: string
+          enum: [cliente, tienda, repartidor]
+        registro:
+          type: object
+          description: Solo la primera vez (después de un 404 REGISTRO_REQUERIDO)
+          required: [telefono, aceptoTerminos]
+          properties:
+            nombre: { type: string, description: 'Si se omite, el de la cuenta de Google o GitHub' }
+            telefono: { type: string, example: '4611234567' }
+            aceptoTerminos: { type: boolean, enum: [true] }
+            tienda: { $ref: '#/components/schemas/RegisterRequest/properties/tienda' }
 
     Tokens:
       type: object
