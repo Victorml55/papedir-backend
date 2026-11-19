@@ -13,6 +13,7 @@ import { DireccionesModule } from './direcciones/direcciones';
 import { DocumentosModule } from './documentos/documentos';
 import { ClienteModule } from './cliente/cliente';
 import { NegocioModule } from './negocio/negocio';
+import { PagosModule } from './pagos/pagos';
 import { NucleoModule } from './nucleo/nucleo.module';
 import { PedidosModule } from './pedidos/pedidos.module';
 import { RealtimeModule } from './realtime/realtime.module';
@@ -52,6 +53,7 @@ export class HealthController {
     DocumentosModule,
     ClienteModule,
     NegocioModule,
+    PagosModule,
     PedidosModule,
     RepartidorModule,
     TicketsModule,

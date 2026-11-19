@@ -99,6 +99,19 @@ export class TareasService {
     );
   }
 
+  /** Planes de tienda vencidos vuelven a Básico y se avisa al dueño. Cada hora. */
+  @Cron('0 5 * * * *')
+  async vencerPlanes() {
+    const vencidas = await this.ds.query(
+      `UPDATE tiendas SET plan = 'basico', plan_hasta = NULL WHERE plan <> 'basico' AND plan_hasta < now() RETURNING owner_id, nombre`,
+    );
+    const filas = Array.isArray(vencidas[0]) ? vencidas[0] : vencidas;
+    for (const t of filas) {
+      void this.push.aUsuarios([t.owner_id], 'Tu plan venció', `${t.nombre} volvió al plan Básico; renuévalo desde la app`);
+    }
+    return filas.length;
+  }
+
   /** La bandeja de notificaciones conserva 60 días. Una vez al día, de madrugada. */
   @Cron('0 15 4 * * *', { timeZone: REGLAS.tienda.zonaHoraria })
   async limpiarNotificaciones() {

@@ -3,11 +3,12 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { randomInt, randomUUID } from 'crypto';
 import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { pagina } from '../common/dtos';
-import { conflicto, invalido, noEncontrado, sinPermiso } from '../common/errores';
+import { AppError, conflicto, invalido, noEncontrado, sinPermiso } from '../common/errores';
 import { coords, folio, redondear } from '../common/util';
 import { ESTADOS_FINALES, EstadoPedido, MOTIVOS, REGLAS } from '../config/reglas';
 import { CuponesService } from '../cupones/cupones.service';
 import { FinanzasService } from '../finanzas/finanzas.service';
+import { PagosService } from '../nucleo/pagos.service';
 import {
   Calificacion, Direccion, EventoPedido, GrupoOpciones, Opcion, OpcionElegida, Pedido, PedidoItem, Producto, Recargo, Tienda, Usuario,
   Vehiculo, Viaje,
@@ -62,6 +63,7 @@ export class PedidosService {
     private readonly push: PushService,
     private readonly cupones: CuponesService,
     private readonly finanzas: FinanzasService,
+    private readonly pagos: PagosService,
     @InjectRepository(Pedido) private readonly pedidos: Repository<Pedido>,
     @InjectRepository(PedidoItem) private readonly items: Repository<PedidoItem>,
     @InjectRepository(EventoPedido) private readonly eventos: Repository<EventoPedido>,
@@ -116,9 +118,10 @@ export class PedidosService {
     const descuento = cupon?.descuento ?? 0;
     const propina = redondear(dto.propina ?? 0);
     const total = redondear(subtotal + costoEnvio + propina - descuento);
-    this.validarMaximo(total);
+    const metodoPago = dto.metodoPago ?? 'efectivo';
+    this.validarMaximo(total, metodoPago);
     const montoTienda = redondear(subtotal - (cupon?.absorbe === 'tienda' ? descuento : 0));
-    return { tienda, direccion, lineas, subtotal, costoEnvio, recargos, cupon, descuento, propina, total, montoTienda, distanciaKm, programadoPara };
+    return { tienda, direccion, lineas, subtotal, costoEnvio, recargos, cupon, descuento, propina, total, montoTienda, distanciaKm, programadoPara, metodoPago };
   }
 
   /**
@@ -171,14 +174,20 @@ export class PedidosService {
     return [...porClave.values()];
   }
 
-  private validarMaximo(total: number) {
-    if (total > REGLAS.pedido.maximoEfectivo) {
+  private validarMaximo(total: number, metodo: 'efectivo' | 'tarjeta' = 'efectivo') {
+    if (metodo === 'tarjeta' && total > REGLAS.pagos.maximoTarjeta) {
+      throw conflicto('PEDIDO_MAXIMO_EFECTIVO', `El máximo por pedido es de $${REGLAS.pagos.maximoTarjeta}`);
+    }
+    if (metodo === 'efectivo' && total > REGLAS.pedido.maximoEfectivo) {
       throw conflicto('PEDIDO_MAXIMO_EFECTIVO', `El máximo para pago en efectivo es de $${REGLAS.pedido.maximoEfectivo}`);
     }
   }
 
   private cotizacion(
-    c: { distanciaKm: number; subtotal: number; costoEnvio: number; total: number; recargos: Recargo[]; descuento?: number; propina?: number; cupon?: any; programadoPara?: Date | null },
+    c: {
+      distanciaKm: number; subtotal: number; costoEnvio: number; total: number; recargos: Recargo[]; descuento?: number; propina?: number;
+      cupon?: any; programadoPara?: Date | null; metodoPago?: 'efectivo' | 'tarjeta';
+    },
     preparacionMin: number,
   ) {
     return {
@@ -190,7 +199,7 @@ export class PedidosService {
       cupon: c.cupon ? { codigo: c.cupon.cupon.codigo, descripcion: c.cupon.cupon.descripcion } : null,
       propina: c.propina ?? 0,
       total: c.total,
-      metodoPago: 'efectivo' as const,
+      metodoPago: c.metodoPago ?? 'efectivo',
       programadoPara: c.programadoPara ?? null,
       tiempoEstimadoMin: preparacionMin + this.envio.minutosDeTraslado(c.distanciaKm),
     };
@@ -202,7 +211,10 @@ export class PedidosService {
   }
 
   /** Inserta un pedido de la app ya validado (dentro de una transacción). Revalida el cupón con bloqueo. */
-  private async insertar(m: EntityManager, cliente: Usuario, c: Awaited<ReturnType<PedidosService['preparar']>>, notas: string | null, grupoId: string | null) {
+  private async insertar(
+    m: EntityManager, cliente: Usuario, c: Awaited<ReturnType<PedidosService['preparar']>>, notas: string | null, grupoId: string | null,
+    paymentIntentId: string | null = null,
+  ) {
     if (c.cupon) {
       const otra = await this.cupones.aplicar(c.cupon.cupon.codigo, cliente.id, c.tienda, c.subtotal, c.costoEnvio, m);
       if (otra.descuento !== c.descuento) throw conflicto('CUPON_INVALIDO', 'El cupón cambió; vuelve a cotizar');
@@ -235,6 +247,9 @@ export class PedidosService {
         grupoId,
         programadoPara: c.programadoPara,
         enviadoATiendaEn: programado ? null : new Date(),
+        metodoPago: c.metodoPago,
+        pagoEstado: paymentIntentId ? 'pagado' : null,
+        paymentIntentId,
       }),
     );
     await m.insert(
@@ -276,13 +291,59 @@ export class PedidosService {
 
   async crear(cliente: Usuario, dto: CrearPedidoDto) {
     const c = await this.preparar(cliente, dto);
+    if (c.metodoPago === 'tarjeta') return this.crearConTarjeta(cliente, dto, c);
     const pedido = await this.ds.transaction((m) => this.insertar(m, cliente, c, dto.notas ?? null, null));
+    await this.avisarTienda(pedido, c.tienda);
+    return this.vista(pedido, cliente);
+  }
+
+  /**
+   * Paso 1 del pago con tarjeta: cotiza el carrito y crea un PaymentIntent por el total (solo se autoriza).
+   * La app lo confirma con flutter_stripe y luego crea el pedido con POST /pedidos { metodoPago: 'tarjeta', paymentIntentId }.
+   */
+  async intentoDePago(cliente: Usuario, dto: CotizarPedidoDto) {
+    const c = await this.preparar(cliente, { ...dto, metodoPago: 'tarjeta' });
+    const intento = await this.pagos.crearIntento(c.total, `PaPedir · ${c.tienda.nombre}`, { clienteId: cliente.id, tiendaId: c.tienda.id }, true);
+    return {
+      paymentIntentId: intento.id,
+      clientSecret: intento.clientSecret,
+      publishableKey: this.pagos.publicable,
+      cotizacion: this.cotizacion(c, c.tienda.tiempoPreparacionMin),
+    };
+  }
+
+  /**
+   * Paso 2: verifica que la tarjeta se autorizó por exactamente el total de hoy, cobra y crea el pedido.
+   * Si el pedido no se puede crear (por ejemplo, se acabó un producto) se devuelve el dinero.
+   */
+  private async crearConTarjeta(cliente: Usuario, dto: CrearPedidoDto, c: Awaited<ReturnType<PedidosService['preparar']>>) {
+    const intento = await this.pagos.obtener(dto.paymentIntentId);
+    if (intento.metadata.clienteId !== cliente.id || intento.metadata.tiendaId !== c.tienda.id) {
+      throw invalido('Ese pago no corresponde a este pedido', 'paymentIntentId');
+    }
+    if (await this.pedidos.existsBy({ paymentIntentId: intento.id })) throw conflicto('PAGO_USADO', 'Ese pago ya se usó en otro pedido');
+    if (intento.estado !== 'requires_capture') {
+      throw new AppError(402, 'PAGO_PENDIENTE', 'El pago no está autorizado; confirma la tarjeta en la app');
+    }
+    if (!PagosService.coincide(intento, c.total)) {
+      await this.pagos.liberar(intento.id);
+      throw conflicto('PAGO_NO_COINCIDE', 'El total cambió desde que se autorizó la tarjeta; vuelve a pagar');
+    }
+    await this.pagos.capturar(intento.id);
+    let pedido: Pedido;
+    try {
+      pedido = await this.ds.transaction((m) => this.insertar(m, cliente, c, dto.notas ?? null, null, intento.id));
+    } catch (e) {
+      await this.pagos.reembolsar(intento.id);
+      throw e;
+    }
     await this.avisarTienda(pedido, c.tienda);
     return this.vista(pedido, cliente);
   }
 
   /** Carrito de varias tiendas: se valida todo y se crean los pedidos juntos (o ninguno). */
   async crearGrupo(cliente: Usuario, dto: GrupoPedidosDto) {
+    if ((dto as any).metodoPago === 'tarjeta') throw invalido('Los carritos de varias tiendas se pagan en efectivo', 'metodoPago');
     const ids = dto.pedidos.map((x) => x.tiendaId);
     if (new Set(ids).size !== ids.length) throw invalido('Cada tienda va una sola vez en el carrito', 'pedidos');
     const preparados = [];
@@ -476,7 +537,9 @@ export class PedidosService {
         total: p.total,
         distanciaKm: p.distanciaKm,
         metodoPago: p.metodoPago,
-        montoAPagarTienda: p.montoTienda,
+        pagoEstado: p.pagoEstado,
+        // Efectivo que el repartidor entrega a la tienda (0 si se pagó con tarjeta: PaPedir le paga a la tienda).
+        montoAPagarTienda: p.metodoPago === 'tarjeta' ? 0 : p.montoTienda,
         // Comisión de PaPedir: solo la ven la tienda, soporte y admin.
         comisionTienda: visor.rol === 'cliente' || visor.rol === 'repartidor' ? null : p.comisionTienda,
         grupoId: p.grupoId,
@@ -543,8 +606,10 @@ export class PedidosService {
       distanciaEntregaKm: p.distanciaKm,
       costoEnvio: p.costoEnvio,
       propina: p.propina,
-      montoAPagarTienda: p.montoTienda,
-      totalACobrar: p.total,
+      metodoPago: p.metodoPago,
+      // Con tarjeta el repartidor no paga ni cobra nada.
+      montoAPagarTienda: p.metodoPago === 'tarjeta' ? 0 : p.montoTienda,
+      totalACobrar: p.metodoPago === 'tarjeta' ? 0 : p.total,
     };
   }
 
@@ -586,8 +651,20 @@ export class PedidosService {
       if (viajeId) await this.cerrarViajeSiTermino(m, viajeId);
       return m.findOneByOrFail(Pedido, { id: p.id });
     });
+    if ((t.hacia === 'cancelado' || t.hacia === 'rechazado') && pedido.pagoEstado === 'pagado') await this.reembolsar(pedido);
     void this.notificar(pedido, repartidorAnterior, t.sinPush);
     return pedido;
+  }
+
+  /** Un pedido pagado con tarjeta que se cancela o rechaza se reembolsa completo. Si Stripe falla, avisa a soporte. */
+  private async reembolsar(p: Pedido) {
+    const ok = await this.pagos.reembolsar(p.paymentIntentId);
+    p.pagoEstado = ok ? 'reembolsado' : 'reembolso_fallido';
+    await this.pedidos.update(p.id, { pagoEstado: p.pagoEstado });
+    await this.ds.getRepository(EventoPedido).insert({
+      pedidoId: p.id, tipo: ok ? 'reembolsado' : 'reembolso_fallido', usuarioId: null, rol: null, detalle: `$${p.total}`,
+    });
+    if (!ok) void this.push.aRoles(['soporte'], 'Reembolso fallido', `${folio('R', p.folioNum)}: devuélvelo desde Stripe`, { pedidoId: p.id });
   }
 
   /** Un viaje termina cuando ya no le quedan pedidos por entregar. */

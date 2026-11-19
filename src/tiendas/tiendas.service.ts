@@ -29,6 +29,7 @@ export const vistaTienda = (t: Tienda, distanciaKm: number | null = null, abiert
   abiertaAhora: abiertaAhora ?? t.abierta,
   pausadaHasta: t.pausadaHasta && t.pausadaHasta > new Date() ? t.pausadaHasta : null,
   usarHorario: t.usarHorario,
+  plan: t.plan !== 'basico' && t.planHasta && t.planHasta > new Date() ? t.plan : 'basico',
   tiempoPreparacionMin: t.tiempoPreparacionMin,
   calificacion: t.calificacion,
   distanciaKm,
@@ -99,7 +100,7 @@ export class TiendasService {
     const [{ total }] = await this.ds.query(`SELECT count(*)::int AS total ${desde}`, params);
     const filas = await this.ds.query(
       `SELECT t.id, ${conUbicacion ? `ST_Distance(t.ubicacion, ${punto})` : 'NULL'} AS metros ${desde}
-       ORDER BY metros NULLS LAST, t.nombre LIMIT ${p(q.limit)} OFFSET ${p((q.page - 1) * q.limit)}`,
+       ORDER BY (t.plan = 'premium' AND t.plan_hasta > now()) DESC, metros NULLS LAST, t.nombre LIMIT ${p(q.limit)} OFFSET ${p((q.page - 1) * q.limit)}`,
       params,
     );
     const porId = new Map((await this.tiendas.findBy({ id: In(filas.map((f) => f.id)) })).map((t) => [t.id, t]));
