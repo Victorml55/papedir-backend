@@ -24,13 +24,17 @@ export class PedidoTiendaDto {
 
 export class CotizarPedidoDto extends PedidoTiendaDto {
   @IsUUID() direccionId: string;
+  /** efectivo (al recibir) o tarjeta (Stripe, se paga antes de crear el pedido). */
+  @IsOptional() @IsIn(['efectivo', 'tarjeta']) metodoPago?: 'efectivo' | 'tarjeta';
   /** Pedido programado: hora de entrega deseada (ISO 8601), de 45 minutos a 7 días a partir de ahora. */
   @IsOptional() @IsISO8601({ strict: true }) programadoPara?: string;
 }
 
 export class CrearPedidoDto extends CotizarPedidoDto {
-  @IsOptional() @IsIn(['efectivo']) metodoPago?: 'efectivo';
   @IsOptional() @IsString() @MaxLength(300) notas?: string | null;
+  /** Con tarjeta: el id del PaymentIntent de POST /pagos/intento, ya confirmado en la app. */
+  @ValidateIf((o) => o.metodoPago === 'tarjeta') @IsString() @Matches(/^pi_[A-Za-z0-9_]+$/, { message: 'paymentIntentId no es válido' })
+  paymentIntentId?: string;
 }
 
 /** Un carrito con productos de 2 o 3 tiendas: se crean pedidos separados (cada uno con su envío y su repartidor). */

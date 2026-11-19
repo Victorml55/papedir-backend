@@ -4,6 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ENTIDADES } from '../database/entities';
 import { AlmacenService } from './almacen.service';
 import { FirebaseService } from './firebase.service';
+import { PagosService } from './pagos.service';
 import { BitacoraCuentasService } from './bitacora-cuentas.service';
 import { ConfiguracionService } from './configuracion.service';
 import { CuponesService } from '../cupones/cupones.service';
@@ -25,7 +26,7 @@ import { RealtimeService } from './realtime.service';
       }),
     }),
   ],
-  providers: [RealtimeService, PushService, EnvioService, CorreoService, BitacoraCuentasService, AlmacenService, ConfiguracionService, CuponesService, FinanzasService, FirebaseService],
-  exports: [TypeOrmModule, JwtModule, RealtimeService, PushService, EnvioService, CorreoService, BitacoraCuentasService, AlmacenService, ConfiguracionService, CuponesService, FinanzasService, FirebaseService],
+  providers: [RealtimeService, PushService, EnvioService, CorreoService, BitacoraCuentasService, AlmacenService, ConfiguracionService, CuponesService, FinanzasService, FirebaseService, PagosService],
+  exports: [TypeOrmModule, JwtModule, RealtimeService, PushService, EnvioService, CorreoService, BitacoraCuentasService, AlmacenService, ConfiguracionService, CuponesService, FinanzasService, FirebaseService, PagosService],
 })
 export class NucleoModule {}

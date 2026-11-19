@@ -19,6 +19,7 @@ import { AppModule } from '../src/app.module';
 import { configurar } from '../src/main';
 import { CorreoService } from '../src/nucleo/correo.service';
 import { FirebaseService, IdentidadFirebase } from '../src/nucleo/firebase.service';
+import { Intento, PagosService } from '../src/nucleo/pagos.service';
 import { TareasService } from '../src/pedidos/tareas.service';
 
 const PASS = 'PaPedir123!';
@@ -1229,6 +1230,123 @@ describe('PaPedir API', () => {
       await api('delete', '/usuarios/me', 'google', { idToken: 'google' }).expect(204);
       await api('get', '/auth/me', 'google').expect(401);
       expect((await entrar('google').expect(404)).body.error).toBe('REGISTRO_REQUERIDO'); // empieza de cero
+    });
+  });
+
+  describe('Pagos con tarjeta y planes (Stripe)', () => {
+    // Stripe simulado: la app confirmaría la tarjeta con flutter_stripe; aquí se marca a mano.
+    const intentos = new Map<string, Intento>();
+    const reembolsos: string[] = [];
+    let fallarReembolso = false;
+    let n = 0;
+    const pagar = (piId: string) => {
+      const i = intentos.get(piId);
+      i.estado = i.metadata.plan ? 'succeeded' : 'requires_capture';
+    };
+    const carrito = (extra: any = {}) => ({ tiendaId: id.tiendaId, direccionId: id.casa, items: [{ productoId: id.pastor, cantidad: 2, opciones: [id.verde] }], ...extra });
+
+    it('sin Stripe configurado responde 503', async () => {
+      expect((await api('post', '/pagos/intento', 'cliente', carrito()).expect(503)).body.error).toBe('PAGOS_NO_CONFIGURADO');
+      const p = app.get(PagosService) as any;
+      p.crearIntento = async (pesos: number, _d: string, metadata: Record<string, string>) => {
+        const i: Intento = { id: `pi_prueba_${++n}`, estado: 'requires_payment_method', centavos: Math.round(pesos * 100), moneda: 'mxn', metadata, clientSecret: `pi_prueba_${n}_secret` };
+        intentos.set(i.id, i);
+        return i;
+      };
+      p.obtener = async (pid: string) => {
+        if (!intentos.has(pid)) throw Object.assign(new Error('no'), { getStatus: () => 400 });
+        return intentos.get(pid);
+      };
+      p.capturar = async (pid: string) => Object.assign(intentos.get(pid), { estado: 'succeeded' });
+      p.liberar = async (pid: string) => void Object.assign(intentos.get(pid), { estado: 'canceled' });
+      p.reembolsar = async (pid: string) => (fallarReembolso ? false : (reembolsos.push(pid), true));
+      expect((await api('get', '/pagos/config', 'cliente').expect(200)).body).toMatchObject({ moneda: 'mxn', maximoTarjeta: 10000 });
+    });
+
+    it('paga un pedido con tarjeta: autoriza, cobra al crear y el repartidor no maneja efectivo', async () => {
+      const r = (await api('post', '/pagos/intento', 'cliente', carrito({ propina: 15 })).expect(200)).body;
+      expect(r).toMatchObject({ paymentIntentId: expect.stringMatching(/^pi_/), clientSecret: expect.any(String), cotizacion: { metodoPago: 'tarjeta', total: 231 } });
+      expect(intentos.get(r.paymentIntentId).centavos).toBe(23100);
+
+      await api('post', '/pedidos', 'cliente', carrito({ propina: 15, metodoPago: 'tarjeta' })).expect(400); // falta paymentIntentId
+      expect((await api('post', '/pedidos', 'cliente', carrito({ propina: 15, metodoPago: 'tarjeta', paymentIntentId: r.paymentIntentId })).expect(402)).body.error).toBe('PAGO_PENDIENTE');
+      pagar(r.paymentIntentId);
+      const p = (await api('post', '/pedidos', 'cliente', carrito({ propina: 15, metodoPago: 'tarjeta', paymentIntentId: r.paymentIntentId })).expect(201)).body;
+      expect(p).toMatchObject({ metodoPago: 'tarjeta', pagoEstado: 'pagado', total: 231, montoAPagarTienda: 0 });
+      expect(intentos.get(r.paymentIntentId).estado).toBe('succeeded');
+      expect((await api('post', '/pedidos', 'cliente', carrito({ propina: 15, metodoPago: 'tarjeta', paymentIntentId: r.paymentIntentId })).expect(409)).body.error).toBe('PAGO_USADO');
+      await api('post', '/pedidos', 'ligar', { ...carrito({ metodoPago: 'tarjeta', paymentIntentId: r.paymentIntentId }), direccionId: undefined }).expect(400);
+
+      await api('post', `/pedidos/${p.id}/aceptar`, 'tienda').expect(200);
+      await api('post', `/pedidos/${p.id}/listo`, 'tienda').expect(200);
+      const disponible = (await api('get', `/repartidor/pedidos-disponibles?lat=${CERCA_DE_TIENDA.lat}&lng=${CERCA_DE_TIENDA.lng}`, 'rep1').expect(200)).body.find((x) => x.id === p.id);
+      expect(disponible).toMatchObject({ metodoPago: 'tarjeta', montoAPagarTienda: 0, totalACobrar: 0, propina: 15 });
+      const viaje = (await api('post', `/repartidor/pedidos/${p.id}/tomar`, 'rep1').expect(200)).body;
+      expect(viaje).toMatchObject({ efectivoAPagarTiendas: 0, efectivoACobrar: 0 });
+      await api('post', `/soporte/pedidos/${p.id}/completar`, 'soporte', { motivo: 'Prueba de tarjeta' }).expect(200);
+
+      // PaPedir cobró: le debe la venta a la tienda y el envío + propina al repartidor.
+      const tienda = (await api('get', '/saldo', 'tienda')).body.movimientos.data.filter((x) => x.pedidoId === p.id);
+      expect(tienda).toEqual(expect.arrayContaining([expect.objectContaining({ tipo: 'venta_tarjeta', monto: -170 })]));
+      const rep = (await api('get', '/saldo', 'rep1')).body.movimientos.data.filter((x) => x.pedidoId === p.id);
+      expect(rep).toEqual(expect.arrayContaining([expect.objectContaining({ tipo: 'envio_tarjeta', monto: -61 })]));
+    });
+
+    it('si el total cambió, no cobra y libera la tarjeta', async () => {
+      const r = (await api('post', '/pagos/intento', 'cliente', carrito()).expect(200)).body;
+      pagar(r.paymentIntentId);
+      expect((await api('post', '/pedidos', 'cliente', carrito({ propina: 50, metodoPago: 'tarjeta', paymentIntentId: r.paymentIntentId })).expect(409)).body.error).toBe('PAGO_NO_COINCIDE');
+      expect(intentos.get(r.paymentIntentId).estado).toBe('canceled');
+    });
+
+    it('cancelar o rechazar un pedido pagado lo reembolsa; si Stripe falla, avisa a soporte', async () => {
+      const crearPagado = async () => {
+        const r = (await api('post', '/pagos/intento', 'cliente', carrito()).expect(200)).body;
+        pagar(r.paymentIntentId);
+        return (await api('post', '/pedidos', 'cliente', carrito({ metodoPago: 'tarjeta', paymentIntentId: r.paymentIntentId })).expect(201)).body;
+      };
+      const a = await crearPagado();
+      const r = (await api('post', `/pedidos/${a.id}/rechazar`, 'tienda', { codigo: 'muy_ocupado' }).expect(200)).body;
+      expect(r.pagoEstado).toBe('reembolsado');
+      expect(reembolsos).toContain(a.paymentIntentId ?? reembolsos.at(-1));
+      expect((await api('get', `/pedidos/${a.id}/eventos`, 'cliente')).body.map((e) => e.tipo)).toContain('reembolsado');
+
+      fallarReembolso = true;
+      const b = await crearPagado();
+      expect((await api('post', `/pedidos/${b.id}/cancelar`, 'cliente', { codigo: 'cambio_de_opinion' }).expect(200)).body.pagoEstado).toBe('reembolso_fallido');
+      fallarReembolso = false;
+    });
+
+    it('planes de tienda: pagar, renovar, volver a básico y vencer', async () => {
+      const con = (metodo: any, ruta: string, cuerpo?: any) => api(metodo, ruta, 'tienda', cuerpo).set('X-Tienda-Id', id.sucursal);
+      const planes = (await api('get', '/planes', 'tienda').expect(200)).body;
+      expect(planes.map((x) => [x.codigo, x.precioMensual, x.comisionPct])).toEqual([['basico', 0, 12], ['pro', 199, 7], ['premium', 399, 4]]);
+      expect((await con('get', '/tiendas/mia/plan').expect(200)).body).toMatchObject({ plan: 'basico', planHasta: null, comisionPct: 12 });
+
+      const e = (await con('post', '/tiendas/mia/plan', { plan: 'pro' }).expect(200)).body;
+      expect(e).toMatchObject({ requierePago: true, monto: 199, paymentIntentId: expect.stringMatching(/^pi_/) });
+      expect((await con('post', '/tiendas/mia/plan/confirmar', { paymentIntentId: e.paymentIntentId }).expect(402)).body.error).toBe('PAGO_PENDIENTE');
+      pagar(e.paymentIntentId);
+      await api('post', '/tiendas/mia/plan/confirmar', 'tienda', { paymentIntentId: e.paymentIntentId }).expect(400); // es de la otra sucursal
+      const pro = (await con('post', '/tiendas/mia/plan/confirmar', { paymentIntentId: e.paymentIntentId }).expect(200)).body;
+      const dias = (f: string) => Math.round((new Date(f).getTime() - Date.now()) / 86400000);
+      expect(pro).toMatchObject({ plan: 'pro', comisionPct: 7 });
+      expect(dias(pro.planHasta)).toBe(30);
+      expect((await con('post', '/tiendas/mia/plan/confirmar', { paymentIntentId: e.paymentIntentId }).expect(409)).body.error).toBe('PAGO_USADO');
+      expect((await api('get', `/tiendas/${id.sucursal}`, 'cliente')).body.plan).toBe('pro');
+
+      const renovar = (await con('post', '/tiendas/mia/plan', { plan: 'pro' }).expect(200)).body;
+      pagar(renovar.paymentIntentId);
+      const renovado = (await con('post', '/tiendas/mia/plan/confirmar', { paymentIntentId: renovar.paymentIntentId }).expect(200)).body;
+      expect(dias(renovado.planHasta)).toBe(60); // los días se suman
+      expect(renovado.pagos).toHaveLength(2);
+
+      expect((await con('post', '/tiendas/mia/plan', { plan: 'basico' }).expect(200)).body).toMatchObject({ plan: 'basico', requierePago: false, comisionPct: 12 });
+
+      await ds.query(`UPDATE tiendas SET plan = 'premium', plan_hasta = now() - interval '1 hour' WHERE id = $1`, [id.sucursal]);
+      expect(await app.get(TareasService).vencerPlanes()).toBe(1);
+      expect((await con('get', '/tiendas/mia/plan')).body.plan).toBe('basico');
+      await api('post', '/tiendas/mia/plan', 'tiendaNueva', { plan: 'pro' }).expect(409); // cuenta en revisión
     });
   });
 

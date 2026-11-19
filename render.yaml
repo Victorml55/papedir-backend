@@ -40,6 +40,10 @@ services:
         sync: false # opcional: sin ella no hay push
       - key: RESEND_API_KEY
         sync: false # opcional: sin ella los códigos por correo solo van al log
+      - key: STRIPE_SECRET_KEY
+        sync: false # sk_test_...; sin ella solo hay pago en efectivo
+      - key: STRIPE_PUBLISHABLE_KEY
+        sync: false # pk_test_...; se la entrega GET /pagos/config a las apps
       - key: CORREO_REMITENTE
         value: PaPedir <onboarding@resend.dev>
       - key: LEGAL_URL_BASE

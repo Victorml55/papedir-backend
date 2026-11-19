@@ -141,6 +141,9 @@ export class Tienda {
   @Column({ default: false }) usarHorario: boolean;
   /** Pausa temporal: no recibe pedidos hasta esta hora. */
   @Column({ ...fecha, nullable: true }) pausadaHasta: Date | null;
+  /** Plan de suscripción vigente hasta planHasta; al vencer vuelve a básico. */
+  @Column({ type: 'text', default: 'basico' }) plan: 'basico' | 'pro' | 'premium';
+  @Column({ ...fecha, nullable: true }) planHasta: Date | null;
   /** Comisión especial para esta tienda; null = la general de /admin/configuracion. */
   @Column({ type: 'numeric', precision: 5, scale: 2, nullable: true, transformer: dinero.transformer }) comisionPct: number | null;
   @Column({ type: 'numeric', precision: 3, scale: 2, nullable: true, transformer: dinero.transformer }) calificacion: number | null;
@@ -237,7 +240,10 @@ export class Pedido {
   @Column(dinero) costoEnvio: number;
   @Column(dinero) total: number;
   @Column({ ...dinero, precision: 6 }) distanciaKm: number;
-  @Column({ type: 'text', default: 'efectivo' }) metodoPago: 'efectivo';
+  @Column({ type: 'text', default: 'efectivo' }) metodoPago: 'efectivo' | 'tarjeta';
+  /** Solo con tarjeta: pagado → (si se cancela) reembolsado o reembolso_fallido. */
+  @Column({ type: 'text', nullable: true }) pagoEstado: 'pagado' | 'reembolsado' | 'reembolso_fallido' | null;
+  @Column({ type: 'text', nullable: true, unique: true }) paymentIntentId: string | null;
   @Column({ nullable: true }) codigoEntrega: string | null;
   @Column({ nullable: true }) notas: string | null;
   @Column({ type: 'uuid', nullable: true }) repartidorId: string | null;
@@ -305,6 +311,18 @@ export class Calificacion {
   /** Respuesta pública de la tienda a la reseña. */
   @Column({ type: 'text', nullable: true }) respuesta: string | null;
   @Column({ ...fecha, nullable: true }) respondidoEn: Date | null;
+  @CreateDateColumn(fecha) creadoEn: Date;
+}
+
+@Entity('suscripciones')
+export class Suscripcion {
+  @PrimaryGeneratedColumn('uuid') id: string;
+  @Column('uuid') tiendaId: string;
+  @Column() plan: string;
+  @Column(dinero) monto: number;
+  @Column({ unique: true }) paymentIntentId: string;
+  @Column(fecha) inicio: Date;
+  @Column(fecha) fin: Date;
   @CreateDateColumn(fecha) creadoEn: Date;
 }
 
@@ -398,7 +416,7 @@ export class Movimiento {
   @Column({ type: 'uuid', nullable: true }) tiendaId: string | null;
   @Column({ type: 'uuid', nullable: true }) pedidoId: string | null;
   @Column({ type: 'uuid', nullable: true }) liquidacionId: string | null;
-  @Column({ type: 'text' }) tipo: 'comision_tienda' | 'comision_envio' | 'descuento_plataforma' | 'liquidacion';
+  @Column({ type: 'text' }) tipo: 'comision_tienda' | 'comision_envio' | 'descuento_plataforma' | 'liquidacion' | 'venta_tarjeta' | 'envio_tarjeta';
   @Column(dinero) monto: number;
   @Column() descripcion: string;
   @CreateDateColumn(fecha) creadoEn: Date;
@@ -432,5 +450,5 @@ export class Mensaje {
 export const ENTIDADES = [
   Usuario, CodigoVerificacion, EventoCuenta, RefreshToken, Dispositivo, Direccion, Tienda, CategoriaProducto, Producto, Viaje, Pedido, PedidoItem,
   EventoPedido, Calificacion, Ticket, Mensaje, Vehiculo, Documento, HorarioTienda, GrupoOpciones, Opcion, Favorito, Cupon,
-  Notificacion, MensajePedido, Zona, Configuracion, Liquidacion, Movimiento,
+  Notificacion, MensajePedido, Zona, Configuracion, Liquidacion, Movimiento, Suscripcion,
 ];
