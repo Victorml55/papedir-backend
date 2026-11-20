@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: PaPedir API
-  version: 1.5.0
+  version: 1.6.0
   description: |
     Contrato de la API de PaPedir, plataforma de reparto a domicilio en Celaya, Gto.
 
@@ -1704,6 +1704,24 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Viaje' }
+        '204': { description: Sin viaje activo }
+
+  /repartidor/viaje-actual/ruta:
+    get:
+      operationId: obtenerRutaDelViaje
+      tags: [Repartidor]
+      summary: Trazo por calles del viaje activo para dibujarlo en el mapa
+      description: >-
+        Desde la última ubicación reportada (`PUT /repartidor/ubicacion`) por las paradas pendientes, en el orden
+        de `paradas`. Se calcula con OSRM (OpenStreetMap). Si OSRM no responde, `fuente` es `linea_recta` y
+        `puntos` son las paradas, para que la app siempre tenga qué dibujar. Basta pedirla al cargar el viaje y
+        después de cada marca; la API la guarda 2 minutos.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RutaViaje' }
         '204': { description: Sin viaje activo }
 
   /repartidor/pedidos/{id}/llegada-tienda:
@@ -3844,6 +3862,21 @@ components:
           type: number
           description: Efectivo a cobrar en el domicilio
           example: 216.0
+
+    RutaViaje:
+      type: object
+      required: [fuente, puntos, metros, segundos]
+      properties:
+        fuente:
+          type: string
+          enum: [calles, linea_recta]
+          description: '`calles`: trazo real por calles. `linea_recta`: OSRM no respondió y se unen las paradas.'
+        puntos:
+          type: array
+          description: Puntos de la polilínea, en orden.
+          items: { $ref: '#/components/schemas/Coordenadas' }
+        metros: { type: integer, nullable: true, example: 3420 }
+        segundos: { type: integer, nullable: true, description: Tiempo estimado manejando, example: 540 }
 
     Viaje:
       type: object
