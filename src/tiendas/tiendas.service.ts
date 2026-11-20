@@ -140,7 +140,11 @@ export class TiendasService {
   async resenas(tiendaId: string, q: PaginaDto) {
     await this.porId(tiendaId);
     const filas = await this.ds.query(
-      `SELECT c.pedido_id AS "pedidoId", c.tienda AS calificacion, c.comentario, c.respuesta, c.respondido_en AS "respondidoEn",
+      // Una reseña oculta por moderación conserva sus estrellas, pero no su texto ni la respuesta.
+      `SELECT c.pedido_id AS "pedidoId", c.tienda AS calificacion,
+              CASE WHEN c.oculta THEN NULL ELSE c.comentario END AS comentario,
+              CASE WHEN c.oculta THEN NULL ELSE c.respuesta END AS respuesta, c.oculta,
+              c.respondido_en AS "respondidoEn",
               c.creado_en AS "creadoEn", u.nombre, u.estado
        FROM calificaciones c JOIN pedidos p ON p.id = c.pedido_id LEFT JOIN usuarios u ON u.id = p.cliente_id
        WHERE c.tienda_id = $1 ORDER BY c.creado_en DESC LIMIT $2 OFFSET $3`,

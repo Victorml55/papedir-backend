@@ -193,9 +193,10 @@ Con la misma cuenta de servicio, la API ya valida el login de las apps (`POST /a
    rules_version = '2';
    service firebase.storage {
      match /b/{bucket}/o {
-       match /avatares/{uid}.jpg {
+       match /avatares/{archivo} {
          allow read: if request.auth != null;
-         allow write: if request.auth != null && request.auth.uid == uid
+         allow write: if request.auth != null
+                      && archivo == request.auth.uid + '.jpg'
                       && request.resource.size < 5 * 1024 * 1024
                       && request.resource.contentType.matches('image/.*');
        }

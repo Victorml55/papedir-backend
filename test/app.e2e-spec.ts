@@ -20,6 +20,7 @@ import { configurar } from '../src/main';
 import { CorreoService } from '../src/nucleo/correo.service';
 import { FirebaseService, IdentidadFirebase } from '../src/nucleo/firebase.service';
 import { Intento, PagosService } from '../src/nucleo/pagos.service';
+import { RutasService } from '../src/nucleo/rutas.service';
 import { TareasService } from '../src/pedidos/tareas.service';
 
 const PASS = 'PaPedir123!';
@@ -290,6 +291,10 @@ describe('PaPedir API', () => {
     it('la geocerca de 150 m aplica en tienda y domicilio', async () => {
       const marca = (paso: string, ubicacion: any, extra: any = {}) =>
         api('post', `/repartidor/pedidos/${id.pedido}/${paso}`, id.ganador, { ubicacion, ...extra });
+      // Sin "ubicacion" (por ejemplo { lat, lng } sueltos) responde 400 con el detalle, no 500.
+      const suelta = await api('post', `/repartidor/pedidos/${id.pedido}/llegada-tienda`, id.ganador, CERCA_DE_TIENDA).expect(400);
+      expect(suelta.body.error).toBe('VALIDACION');
+      expect(JSON.stringify(suelta.body.detalles)).toContain('ubicacion es obligatoria');
       expect((await marca('llegada-tienda', mover(TIENDA, 0.003)).expect(409)).body.error).toBe('FUERA_DE_RANGO');
       await marca('llegada-tienda', CERCA_DE_TIENDA).expect(200);
       await marca('llegada-cliente', CASA).expect(409); // falta salir de la tienda
@@ -677,6 +682,36 @@ describe('PaPedir API', () => {
         if (i) expect(p.etaMin).toBeGreaterThanOrEqual(pendientes[i - 1].etaMin);
       });
       expect(viaje.pedidos[0].etaMin).toEqual(expect.any(Number));
+    });
+
+    it('la ruta por calles sale de OSRM y, si no responde, se dibuja en línea recta', async () => {
+      const rutas = app.get(RutasService) as any;
+      const fetchOriginal = global.fetch;
+      const viaje = (await api('get', '/repartidor/viaje-actual', 'rep2').expect(200)).body;
+      const pendientes = viaje.paradas.filter((p) => !p.completada).map((p) => p.ubicacion);
+      try {
+        // OSRM caído: línea recta desde la última ubicación del repartidor por las paradas pendientes.
+        global.fetch = (async () => {
+          throw new Error('sin red');
+        }) as any;
+        const recta = (await api('get', '/repartidor/viaje-actual/ruta', 'rep2').expect(200)).body;
+        expect(recta).toMatchObject({ fuente: 'linea_recta', metros: null, segundos: null });
+        expect(recta.puntos.slice(-pendientes.length)).toEqual(pendientes);
+
+        // OSRM responde: se devuelven sus puntos ({lng,lat} → {lat,lng}) con distancia y tiempo.
+        rutas.cache.clear();
+        let pedida = '';
+        global.fetch = (async (url: string) => {
+          pedida = url;
+          return { ok: true, status: 200, json: async () => ({ code: 'Ok', routes: [{ distance: 3420.4, duration: 539.6, geometry: { coordinates: [[-100.81, 20.52], [-100.812, 20.521]] } }] }) };
+        }) as any;
+        const calles = (await api('get', '/repartidor/viaje-actual/ruta', 'rep2').expect(200)).body;
+        expect(calles).toEqual({ fuente: 'calles', puntos: [{ lat: 20.52, lng: -100.81 }, { lat: 20.521, lng: -100.812 }], metros: 3420, segundos: 540 });
+        expect(pedida).toContain('/route/v1/driving/');
+      } finally {
+        global.fetch = fetchOriginal;
+        rutas.cache.clear();
+      }
     });
   });
 
@@ -1357,6 +1392,135 @@ describe('PaPedir API', () => {
         request(http).post('/api/v1/uploads').set('Authorization', `Bearer ${tok.tienda}`).field('tipo', 'producto').attach('archivo', png, { filename: nombre, contentType: tipo });
       expect((await subir('foto.png', 'image/png').expect(201)).body.url).toMatch(/\/uploads\/productos\/.+\.png$/);
       await subir('doc.pdf', 'application/pdf').expect(400);
+    });
+  });
+
+  describe('Panel de administración', () => {
+    it('el tablero resume el momento y lista las alertas', async () => {
+      const t = (await api('get', '/soporte/tablero', 'soporte').expect(200)).body;
+      expect(t).toMatchObject({ pedidosEnCurso: expect.any(Number), ventasHoy: expect.any(Number), cuentasPorAprobar: expect.any(Number) });
+      expect(Array.isArray(t.alertas)).toBe(true);
+      // Un pedido listo hace 20 min sin repartidor aparece como alerta.
+      const p = await manual(mover(TIENDA, 0.002));
+      await ds.query(`UPDATE pedidos SET listo_en = now() - interval '20 minutes' WHERE id = $1`, [p.id]);
+      const alertas = (await api('get', '/soporte/tablero', 'soporte')).body.alertas;
+      expect(alertas).toContainEqual(expect.objectContaining({ tipo: 'sin_repartidor', pedidoId: p.id, folio: p.folio }));
+      await api('get', '/soporte/tablero', 'cliente').expect(403);
+    });
+
+    it('lista tiendas con su dueño y abre la ficha; soporte puede pausarla y reanudarla', async () => {
+      const lista = (await api('get', '/soporte/tiendas?q=Usuario%20tienda', 'soporte').expect(200)).body;
+      const fila = lista.data.find((t) => t.id === id.tiendaId);
+      expect(fila).toMatchObject({ dueno: { email: 'tienda@prueba.test' }, plan: expect.any(String), pedidos30d: expect.any(Number) });
+
+      const ficha = (await api('get', `/soporte/tiendas/${id.tiendaId}`, 'soporte').expect(200)).body;
+      expect(ficha).toMatchObject({ id: id.tiendaId, dueno: { email: 'tienda@prueba.test' }, comision: { aplicada: expect.any(Number) } });
+      expect(ficha.menu.length).toBeGreaterThan(0);
+
+      const abiertaAntes = ficha.abiertaAhora;
+      const pausada = (await api('put', `/soporte/tiendas/${id.tiendaId}/pausa`, 'soporte', { minutos: 60, motivo: 'Quejas por pedidos incompletos' }).expect(200)).body;
+      expect(pausada.pausadaHasta).toEqual(expect.any(String));
+      expect(pausada.abiertaAhora).toBe(false);
+      await api('put', `/soporte/tiendas/${id.tiendaId}/pausa`, 'soporte', { minutos: 60 }).expect(400); // sin motivo
+      const reanudada = (await api('put', `/soporte/tiendas/${id.tiendaId}/pausa`, 'soporte', { minutos: 0, motivo: 'Ya se resolvió' }).expect(200)).body;
+      expect(reanudada).toMatchObject({ pausadaHasta: null, abiertaAhora: abiertaAntes });
+      const historial = (await api('get', `/soporte/usuarios/${reanudada.dueno.id}/eventos`, 'soporte')).body;
+      expect(JSON.stringify(historial)).toContain('tienda_pausada');
+    });
+
+    it('lista repartidores con conexión y vehículo, y arma el mapa de despacho', async () => {
+      await api('put', '/repartidor/ubicacion', 'rep1', CERCA_DE_TIENDA).expect(204);
+      await api('patch', '/repartidor/disponibilidad', 'rep1', { disponible: true }).expect(200);
+      const conectados = (await api('get', '/soporte/repartidores?conectado=si', 'soporte').expect(200)).body.data;
+      expect(conectados.find((r) => r.id === id.rep1)).toMatchObject({ conectado: true, ubicacion: CERCA_DE_TIENDA, entregasTotales: expect.any(Number) });
+      const desconectados = (await api('get', '/soporte/repartidores?conectado=no', 'soporte')).body.data;
+      expect(desconectados.some((r) => r.id === id.rep1)).toBe(false);
+
+      const mapa = (await api('get', '/soporte/mapa', 'soporte').expect(200)).body;
+      expect(mapa.repartidores.find((r) => r.id === id.rep1)).toMatchObject({ ubicacion: CERCA_DE_TIENDA });
+      expect(mapa.pedidos.length).toBeGreaterThan(0);
+      expect(mapa.pedidos[0]).toMatchObject({ folio: expect.stringMatching(/^R-/), tienda: { ubicacion: expect.any(Object) }, destino: expect.any(Object) });
+    });
+
+    it('oculta el texto de una reseña al público sin cambiar sus estrellas', async () => {
+      const lista = (await api('get', `/soporte/resenas?tiendaId=${id.tiendaId}`, 'soporte').expect(200)).body.data;
+      const r = lista.find((x) => x.comentario);
+      expect(r).toBeDefined();
+      await api('patch', `/soporte/resenas/${r.pedidoId}`, 'soporte', { oculta: true }).expect(400); // falta el motivo
+      const oculta = (await api('patch', `/soporte/resenas/${r.pedidoId}`, 'soporte', { oculta: true, motivo: 'Lenguaje ofensivo' }).expect(200)).body;
+      expect(oculta).toMatchObject({ oculta: true, ocultaMotivo: 'Lenguaje ofensivo', ocultaPor: 'soporte', comentario: r.comentario });
+
+      const publica = (await api('get', `/tiendas/${id.tiendaId}/resenas`, 'cliente')).body;
+      expect(publica.data.find((x) => x.pedidoId === r.pedidoId)).toMatchObject({ oculta: true, comentario: null, calificacion: r.estrellas });
+      expect((await api('get', '/soporte/resenas?ocultas=si', 'soporte')).body.data.map((x) => x.pedidoId)).toContain(r.pedidoId);
+
+      await api('patch', `/soporte/resenas/${r.pedidoId}`, 'soporte', { oculta: false }).expect(200);
+      expect((await api('get', `/tiendas/${id.tiendaId}/resenas`, 'cliente')).body.data.find((x) => x.pedidoId === r.pedidoId).comentario).toBe(r.comentario);
+    });
+
+    it('admin corrige datos, pone una contraseña temporal y elimina cuentas; soporte no puede', async () => {
+      await registrar('editable', 'cliente');
+      await api('patch', `/admin/usuarios/${id.editable}`, 'soporte', { nombre: 'X' }).expect(403);
+      const editado = (await api('patch', `/admin/usuarios/${id.editable}`, 'admin', { nombre: 'Laura Méndez', telefono: '4611234567' }).expect(200)).body;
+      expect(editado).toMatchObject({ nombre: 'Laura Méndez', telefono: '4611234567' });
+      expect((await api('patch', `/admin/usuarios/${id.editable}`, 'admin', { email: 'cliente@prueba.test' }).expect(409)).body.error).toBe('EMAIL_EN_USO');
+      await api('patch', `/admin/usuarios/${id.editable}`, 'admin', { rol: 'admin' }).expect(400); // un cliente no cambia de rol
+
+      await api('put', `/admin/usuarios/${id.editable}/password`, 'admin', { password: 'Temporal2026' }).expect(204);
+      await api('post', '/auth/login', undefined, { email: 'editable@prueba.test', password: PASS, app: 'cliente' }).expect(401);
+      await api('post', '/auth/login', undefined, { email: 'editable@prueba.test', password: 'Temporal2026', app: 'cliente' }).expect(200);
+
+      await api('delete', `/admin/usuarios/${id.editable}`, 'admin', {}).expect(400); // sin motivo
+      await api('delete', `/admin/usuarios/${id.editable}`, 'admin', { motivo: 'Pidió su baja por teléfono' }).expect(204);
+      const eliminada = (await api('get', `/soporte/usuarios/${id.editable}`, 'soporte')).body;
+      expect(eliminada).toMatchObject({ estado: 'eliminado', nombre: 'Usuario eliminado' });
+      await api('post', '/auth/login', undefined, { email: 'editable@prueba.test', password: 'Temporal2026', app: 'cliente' }).expect(401);
+
+      const yo = (await api('get', '/auth/me', 'admin')).body;
+      expect((await api('delete', `/admin/usuarios/${yo.id}`, 'admin', { motivo: 'x' }).expect(403)).body.error).toBe('SIN_PERMISO');
+    });
+
+    it('series de métricas por día y por hora, con los mejores', async () => {
+      const s = (await api('get', '/admin/metricas/series', 'admin').expect(200)).body;
+      expect(s.porHora).toHaveLength(24);
+      expect(s.porDia.length).toBeGreaterThan(0);
+      expect(s.porDia[0]).toMatchObject({ dia: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/), pedidos: expect.any(Number), ventas: expect.any(Number) });
+      expect(s.topTiendas[0]).toMatchObject({ nombre: expect.any(String), ventas: expect.any(Number) });
+      expect(s.tiempos).toHaveProperty('entregaMin');
+      await api('get', '/admin/metricas/series', 'soporte').expect(403);
+    });
+
+    it('envía notificaciones generales a un tema o a todo un rol', async () => {
+      const tema = (await api('post', '/admin/notificaciones', 'admin', { destino: 'tema', tema: 'promociones', titulo: 'Hoy envío gratis', cuerpo: 'Usa ENVIOGRATIS' }).expect(200)).body;
+      expect(tema).toMatchObject({ destino: 'tema', tema: 'promociones', modo: 'simulada' });
+      await api('post', '/admin/notificaciones', 'admin', { destino: 'tema', tema: 'todos', titulo: 'x', cuerpo: 'y' }).expect(400);
+      const rol = (await api('post', '/admin/notificaciones', 'admin', { destino: 'rol', rol: 'repartidor', titulo: 'Llueve', cuerpo: 'Hay recargo de lluvia' }).expect(200)).body;
+      expect(rol.destinatarios).toBeGreaterThan(0);
+      const bandeja = (await api('get', '/notificaciones', 'rep1')).body;
+      expect(JSON.stringify(bandeja)).toContain('Hay recargo de lluvia');
+    });
+
+    it('los tickets se pueden pasar a otra persona del equipo', async () => {
+      const t = (await api('post', '/tickets', 'cliente', { asunto: 'Duda con mi cuenta', descripcion: 'No me llega el correo' }).expect(201)).body;
+      const yo = (await api('get', '/auth/me', 'admin')).body;
+      const pasado = (await api('patch', `/soporte/tickets/${t.id}`, 'soporte', { atendidoPor: yo.id }).expect(200)).body;
+      expect(pasado).toMatchObject({ estado: 'en_atencion' });
+      expect(JSON.stringify(pasado)).toContain(yo.id);
+      await api('patch', `/soporte/tickets/${t.id}`, 'soporte', { atendidoPor: id.rep1 }).expect(400); // no es del equipo
+    });
+
+    it('la bitácora guarda lo que hace el equipo, sin contraseñas', async () => {
+      const b = (await api('get', '/admin/bitacora', 'admin').expect(200)).body.data;
+      const pausa = b.find((a) => a.accion === 'Pausó o reanudó una tienda');
+      expect(pausa).toMatchObject({ actor: { nombre: 'soporte', rol: 'soporte' }, recursoId: id.tiendaId, detalle: { motivo: expect.any(String) } });
+      const password = b.find((a) => a.accion === 'Puso una contraseña temporal');
+      expect(password.detalle).toBeNull();
+      expect(JSON.stringify(b)).not.toContain('Temporal2026');
+      expect(b.some((a) => a.metodo === 'GET')).toBe(false);
+      const filtrada = (await api('get', '/admin/bitacora?q=reseña', 'admin')).body.data;
+      expect(filtrada.length).toBeGreaterThan(0);
+      expect(filtrada.every((a) => a.accion === 'Moderó una reseña')).toBe(true);
+      await api('get', '/admin/bitacora', 'soporte').expect(403);
     });
   });
 });

@@ -4,7 +4,7 @@ import { IsIn, IsNotEmpty, IsOptional, IsString, IsUUID, MaxLength } from 'class
 import { In, Repository } from 'typeorm';
 import { Actor, Roles } from '../common/auth';
 import { pagina, PaginaDto } from '../common/dtos';
-import { conflicto, noEncontrado, sinPermiso } from '../common/errores';
+import { conflicto, invalido, noEncontrado, sinPermiso } from '../common/errores';
 import { folio, UuidPipe } from '../common/util';
 import { Mensaje, Ticket, Usuario } from '../database/entities';
 import { PushService } from '../nucleo/push.service';
@@ -124,9 +124,20 @@ export class TicketsService {
   }
 
   /** Soporte: tomar el ticket y/o cambiar su estado. */
-  async atender(id: string, agente: Usuario, cambios: { estado?: string; asignarmelo?: boolean }) {
+  async atender(id: string, agente: Usuario, cambios: { estado?: string; asignarmelo?: boolean; atendidoPor?: string }) {
     const t = await this.tickets.findOneBy({ id });
     if (!t) throw noEncontrado('Ticket no encontrado');
+    if (cambios.atendidoPor) {
+      const otro = await this.usuarios.findOneBy({ id: cambios.atendidoPor });
+      if (!otro || !['soporte', 'admin'].includes(otro.rol) || otro.estado !== 'activo') {
+        throw invalido('Solo se puede asignar a una cuenta activa de soporte o admin', 'atendidoPor');
+      }
+      t.atendidoPor = otro.id;
+      if (t.estado === 'abierto') t.estado = 'en_atencion';
+      if (otro.id !== agente.id) {
+        void this.push.aUsuarios([otro.id], `Te asignaron el ticket ${folio('T', t.folioNum)}`, `${agente.nombre} te lo pasó: ${t.asunto}`, { ticketId: t.id });
+      }
+    }
     if (cambios.asignarmelo) {
       t.atendidoPor = agente.id;
       if (t.estado === 'abierto') t.estado = 'en_atencion';

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: PaPedir API
-  version: 1.5.0
+  version: 1.7.0
   description: |
     Contrato de la API de PaPedir, plataforma de reparto a domicilio en Celaya, Gto.
 
@@ -630,6 +630,7 @@ paths:
                         pedidoId: { type: string, format: uuid }
                         calificacion: { type: integer, minimum: 1, maximum: 5 }
                         comentario: { type: string, nullable: true }
+                        oculta: { type: boolean, description: 'Oculta por moderación: comentario y respuesta llegan en null' }
                         cliente: { type: string, example: Ana L., description: Nombre e inicial del apellido }
                         respuesta: { type: string, nullable: true, description: Respuesta de la tienda }
                         respondidoEn: { type: string, format: date-time, nullable: true }
@@ -1706,6 +1707,24 @@ paths:
               schema: { $ref: '#/components/schemas/Viaje' }
         '204': { description: Sin viaje activo }
 
+  /repartidor/viaje-actual/ruta:
+    get:
+      operationId: obtenerRutaDelViaje
+      tags: [Repartidor]
+      summary: Trazo por calles del viaje activo para dibujarlo en el mapa
+      description: >-
+        Desde la última ubicación reportada (`PUT /repartidor/ubicacion`) por las paradas pendientes, en el orden
+        de `paradas`. Se calcula con OSRM (OpenStreetMap). Si OSRM no responde, `fuente` es `linea_recta` y
+        `puntos` son las paradas, para que la app siempre tenga qué dibujar. Basta pedirla al cargar el viaje y
+        después de cada marca; la API la guarda 2 minutos.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RutaViaje' }
+        '204': { description: Sin viaje activo }
+
   /repartidor/pedidos/{id}/llegada-tienda:
     parameters:
       - $ref: '#/components/parameters/Id'
@@ -2370,6 +2389,7 @@ paths:
               properties:
                 estado: { $ref: '#/components/schemas/EstadoTicket' }
                 asignarmelo: { type: boolean }
+                atendidoPor: { type: string, format: uuid, description: 'Pasar el ticket a otra persona del equipo (soporte o admin)' }
       responses:
         '200':
           description: OK
@@ -2938,6 +2958,311 @@ paths:
                   tiendasActivas: { type: integer, example: 14 }
                   repartidoresActivos: { type: integer, example: 9 }
                   ticketsAbiertos: { type: integer, example: 3 }
+
+  /soporte/tablero:
+    get:
+      operationId: obtenerTablero
+      tags: [Soporte]
+      summary: Resumen de inicio del panel, con alertas
+      description: >-
+        Cifras del momento y alertas de lo que necesita atención: pedidos listos con más de 15 min sin repartidor,
+        pedidos que la tienda no ha aceptado en 3 min, reembolsos fallidos y tickets con más de 30 min sin atender.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tablero' }
+
+  /soporte/tiendas:
+    get:
+      operationId: listarTiendasPanel
+      tags: [Soporte]
+      summary: Todas las tiendas, con dueño, plan, estado y ventas de los últimos 30 días
+      parameters:
+        - { name: q, in: query, description: 'Tienda, dueño o correo', schema: { type: string, maxLength: 60 } }
+        - { name: estado, in: query, description: Estado de la cuenta del dueño, schema: { $ref: '#/components/schemas/EstadoCuenta' } }
+        - { name: plan, in: query, schema: { type: string, enum: [basico, pro, premium] } }
+        - { name: abierta, in: query, description: Si recibe pedidos ahora, schema: { type: string, enum: [si, no] } }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/TiendaPanel' } }
+                  meta: { $ref: '#/components/schemas/PaginaMeta' }
+
+  /soporte/tiendas/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: obtenerTiendaPanel
+      tags: [Soporte]
+      summary: Ficha completa de una tienda
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FichaTienda' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /soporte/tiendas/{id}/pausa:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    put:
+      operationId: pausarTienda
+      tags: [Soporte]
+      summary: Pausar o reanudar una tienda sin banear la cuenta
+      description: Con `minutos` > 0 deja de recibir pedidos hasta esa hora; con 0 quita la pausa. Se le avisa al dueño.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [minutos, motivo]
+              properties:
+                minutos: { type: integer, minimum: 0, maximum: 4320, example: 60 }
+                motivo: { type: string, maxLength: 300, example: Varias quejas por pedidos incompletos }
+      responses:
+        '200':
+          description: La ficha actualizada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FichaTienda' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /soporte/repartidores:
+    get:
+      operationId: listarRepartidoresPanel
+      tags: [Soporte]
+      summary: Repartidores con conexión, vehículo, entregas de hoy y saldo
+      parameters:
+        - { name: q, in: query, description: 'Nombre, correo, teléfono o placa', schema: { type: string, maxLength: 60 } }
+        - { name: estado, in: query, schema: { $ref: '#/components/schemas/EstadoCuenta' } }
+        - { name: conectado, in: query, description: Disponible y con ubicación de los últimos 5 min, schema: { type: string, enum: [si, no] } }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/RepartidorPanel' } }
+                  meta: { $ref: '#/components/schemas/PaginaMeta' }
+
+  /soporte/mapa:
+    get:
+      operationId: obtenerMapaDespacho
+      tags: [Soporte]
+      summary: Mapa de despacho en vivo
+      description: >-
+        Repartidores conectados o en viaje, pedidos activos y tiendas que reciben pedidos. Después, la sala `soporte`
+        recibe `mapa:repartidor` con cada ubicación nueva y `pedido:actualizado` con cada cambio.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MapaDespacho' }
+
+  /soporte/resenas:
+    get:
+      operationId: listarResenasPanel
+      tags: [Soporte]
+      summary: Todas las reseñas, para moderarlas
+      parameters:
+        - { name: q, in: query, description: 'Comentario, tienda o cliente', schema: { type: string, maxLength: 60 } }
+        - { name: estrellas, in: query, schema: { type: integer, minimum: 1, maximum: 5 } }
+        - { name: ocultas, in: query, schema: { type: string, enum: [si, no] } }
+        - { name: tiendaId, in: query, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/ResenaPanel' } }
+                  meta: { $ref: '#/components/schemas/PaginaMeta' }
+
+  /soporte/resenas/{pedidoId}:
+    parameters:
+      - { name: pedidoId, in: path, required: true, schema: { type: string, format: uuid } }
+    patch:
+      operationId: moderarResena
+      tags: [Soporte]
+      summary: Ocultar o volver a mostrar el texto de una reseña
+      description: Una reseña oculta conserva sus estrellas en el promedio, pero el público ya no ve su comentario ni la respuesta.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [oculta]
+              properties:
+                oculta: { type: boolean }
+                motivo: { type: string, maxLength: 300, description: Obligatorio al ocultar, example: Lenguaje ofensivo }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResenaPanel' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/usuarios/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    patch:
+      operationId: editarUsuarioAdmin
+      tags: [Admin]
+      summary: Corregir los datos de una cuenta
+      description: El rol solo se cambia entre soporte y admin. Cambiar correo o rol cierra sus sesiones.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                nombre: { type: string, maxLength: 80 }
+                telefono: { type: string, pattern: '^[0-9]{10}$' }
+                email: { type: string, format: email }
+                rol: { type: string, enum: [soporte, admin] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Usuario' }
+        '409': { description: '`EMAIL_EN_USO`, `ULTIMO_ADMIN` o `CUENTA_ELIMINADA`' }
+    delete:
+      operationId: eliminarUsuarioAdmin
+      tags: [Admin]
+      summary: Eliminar una cuenta (anonimiza sus datos)
+      description: Igual que cuando el usuario elimina su cuenta; sus pedidos y pagos se conservan sin datos personales.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [motivo]
+              properties:
+                motivo: { type: string, maxLength: 300 }
+      responses:
+        '204': { description: Eliminada }
+        '409': { description: '`TIENE_PEDIDOS_ACTIVOS`, `ULTIMO_ADMIN` o `CUENTA_ELIMINADA`' }
+
+  /admin/usuarios/{id}/password:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    put:
+      operationId: fijarPasswordAdmin
+      tags: [Admin]
+      summary: Poner una contraseña temporal y cerrar sus sesiones
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string, minLength: 8, maxLength: 72 }
+      responses:
+        '204': { description: Lista }
+        '409': { description: '`CUENTA_SOCIAL`: entra con Google o GitHub' }
+
+  /admin/metricas/series:
+    get:
+      operationId: obtenerSeriesMetricas
+      tags: [Admin]
+      summary: Series para las gráficas de métricas
+      parameters:
+        - { name: desde, in: query, schema: { type: string, format: date } }
+        - { name: hasta, in: query, schema: { type: string, format: date } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SeriesMetricas' }
+
+  /admin/notificaciones:
+    post:
+      operationId: enviarNotificacionGeneral
+      tags: [Admin]
+      summary: Enviar una notificación push general
+      description: >-
+        `tema`: a un tema de FCM (novedades, promociones, tiendas, repartidores). `rol`: a todas las cuentas activas de
+        un rol; también queda en su bandeja de notificaciones.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [destino, titulo, cuerpo]
+              properties:
+                destino: { type: string, enum: [tema, rol] }
+                tema: { type: string, enum: [novedades, promociones, tiendas, repartidores] }
+                rol: { type: string, enum: [cliente, tienda, repartidor] }
+                titulo: { type: string, maxLength: 65, example: Hoy envío gratis }
+                cuerpo: { type: string, maxLength: 240, example: Usa el cupón ENVIOGRATIS en compras desde $150 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [destino, modo]
+                properties:
+                  destino: { type: string, enum: [tema, rol] }
+                  tema: { type: string }
+                  rol: { type: string }
+                  destinatarios: { type: integer }
+                  modo: { type: string, enum: [enviada, simulada], description: '`simulada`: la API no tiene Firebase configurado' }
+
+  /admin/bitacora:
+    get:
+      operationId: listarBitacoraAdmin
+      tags: [Admin]
+      summary: Acciones del equipo de soporte y admin
+      parameters:
+        - { name: actorId, in: query, schema: { type: string, format: uuid } }
+        - { name: q, in: query, schema: { type: string, maxLength: 60 } }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/AccionInterna' } }
+                  meta: { $ref: '#/components/schemas/PaginaMeta' }
 
 components:
   securitySchemes:
@@ -3844,6 +4169,316 @@ components:
           type: number
           description: Efectivo a cobrar en el domicilio
           example: 216.0
+
+    Tablero:
+      type: object
+      required: [pedidosEnCurso, pedidosProgramados, pedidosHoy, ventasHoy, ventasAyerMismaHora, ticketsSinAtender, ticketsEnAtencion, cuentasPorAprobar, documentosPorRevisar, repartidoresConectados, tiendasAbiertas, porEstado, alertas]
+      properties:
+        pedidosEnCurso: { type: integer }
+        pedidosProgramados: { type: integer }
+        pedidosHoy: { type: integer }
+        ventasHoy: { type: number }
+        ventasAyerMismaHora: { type: number, description: Ventas de ayer hasta esta misma hora }
+        ticketsSinAtender: { type: integer }
+        ticketsEnAtencion: { type: integer }
+        cuentasPorAprobar: { type: integer }
+        documentosPorRevisar: { type: integer }
+        repartidoresConectados: { type: integer }
+        tiendasAbiertas: { type: integer }
+        porEstado:
+          type: array
+          items:
+            type: object
+            required: [estado, total]
+            properties:
+              estado: { $ref: '#/components/schemas/EstadoPedido' }
+              total: { type: integer }
+        alertas:
+          type: array
+          items:
+            type: object
+            required: [tipo, folio, desde]
+            properties:
+              tipo: { type: string, enum: [sin_repartidor, tienda_sin_responder, reembolso_fallido, ticket_esperando] }
+              pedidoId: { type: string, format: uuid }
+              ticketId: { type: string, format: uuid }
+              folio: { type: string, example: R-000053 }
+              desde: { type: string, format: date-time }
+
+    TiendaPanel:
+      type: object
+      required: [id, nombre, categoria, direccion, plan, abierta, abiertaAhora, dueno, pedidos30d, ventas30d, resenas, creadoEn]
+      properties:
+        id: { type: string, format: uuid }
+        nombre: { type: string }
+        categoria: { type: string }
+        imagenUrl: { type: string, nullable: true }
+        direccion: { type: string }
+        telefono: { type: string, nullable: true }
+        plan: { type: string, enum: [basico, pro, premium], description: Plan vigente }
+        planHasta: { type: string, format: date-time, nullable: true }
+        calificacion: { type: number, nullable: true }
+        abierta: { type: boolean, description: Interruptor de la tienda }
+        abiertaAhora: { type: boolean, description: 'Recibe pedidos en este momento (interruptor, horario y pausa)' }
+        pausadaHasta: { type: string, format: date-time, nullable: true }
+        comisionPct: { type: number, nullable: true, description: Comisión propia; null usa la general }
+        dueno:
+          type: object
+          required: [id, nombre, email, estado]
+          properties:
+            id: { type: string, format: uuid }
+            nombre: { type: string }
+            email: { type: string }
+            telefono: { type: string, nullable: true }
+            estado: { $ref: '#/components/schemas/EstadoCuenta' }
+        pedidos30d: { type: integer }
+        ventas30d: { type: number, description: Productos vendidos en 30 días }
+        resenas: { type: integer }
+        creadoEn: { type: string, format: date-time }
+
+    FichaTienda:
+      allOf:
+        - $ref: '#/components/schemas/Tienda'
+        - type: object
+          required: [dueno, comision, ultimos30Dias, sucursales, menu, pedidos, resenas, suscripciones]
+          properties:
+            pausadaHasta: { type: string, format: date-time, nullable: true }
+            dueno: { $ref: '#/components/schemas/Usuario' }
+            comision:
+              type: object
+              required: [general, aplicada]
+              properties:
+                propia: { type: number, nullable: true }
+                general: { type: number }
+                aplicada: { type: number }
+            ultimos30Dias:
+              type: object
+              properties:
+                entregados: { type: integer }
+                rechazados: { type: integer }
+                cancelados: { type: integer }
+                ventas: { type: number }
+                preparacionMin: { type: integer, nullable: true }
+            sucursales:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  nombre: { type: string }
+                  direccion: { type: string }
+            menu: { type: array, items: { $ref: '#/components/schemas/MenuCategoria' } }
+            pedidos:
+              type: array
+              items:
+                type: object
+                required: [id, folio, estado, total, creadoEn]
+                properties:
+                  id: { type: string, format: uuid }
+                  folio: { type: string }
+                  estado: { $ref: '#/components/schemas/EstadoPedido' }
+                  total: { type: number }
+                  metodoPago: { type: string, enum: [efectivo, tarjeta] }
+                  cliente: { type: string }
+                  creadoEn: { type: string, format: date-time }
+            resenas: { type: array, items: { $ref: '#/components/schemas/ResenaPanel' } }
+            suscripciones:
+              type: array
+              items:
+                type: object
+                properties:
+                  plan: { type: string }
+                  monto: { type: number }
+                  inicio: { type: string, format: date-time }
+                  fin: { type: string, format: date-time }
+                  creadoEn: { type: string, format: date-time }
+
+    RepartidorPanel:
+      type: object
+      required: [id, nombre, email, estado, conectado, disponible, pedidosEnCurso, entregasHoy, entregasTotales, saldo, creadoEn]
+      properties:
+        id: { type: string, format: uuid }
+        nombre: { type: string }
+        email: { type: string }
+        telefono: { type: string, nullable: true }
+        estado: { $ref: '#/components/schemas/EstadoCuenta' }
+        fotoUrl: { type: string, nullable: true }
+        calificacion: { type: number, nullable: true }
+        conectado: { type: boolean }
+        disponible: { type: boolean }
+        ubicacionEn: { type: string, format: date-time, nullable: true }
+        ubicacion:
+          type: object
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/Coordenadas' }]
+        vehiculo:
+          type: object
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/Vehiculo' }]
+        pedidosEnCurso: { type: integer }
+        entregasHoy: { type: integer }
+        entregasTotales: { type: integer }
+        saldo: { type: number, description: 'Positivo: le debe a PaPedir' }
+        creadoEn: { type: string, format: date-time }
+
+    MapaDespacho:
+      type: object
+      required: [repartidores, pedidos, tiendas]
+      properties:
+        repartidores:
+          type: array
+          items:
+            type: object
+            required: [id, nombre, ubicacion, conectado, pedidosEnCurso]
+            properties:
+              id: { type: string, format: uuid }
+              nombre: { type: string }
+              ubicacion: { $ref: '#/components/schemas/Coordenadas' }
+              ubicacionEn: { type: string, format: date-time, nullable: true }
+              conectado: { type: boolean }
+              pedidosEnCurso: { type: integer }
+        pedidos:
+          type: array
+          items:
+            type: object
+            required: [id, folio, estado, destino, tienda]
+            properties:
+              id: { type: string, format: uuid }
+              folio: { type: string }
+              estado: { $ref: '#/components/schemas/EstadoPedido' }
+              repartidorId: { type: string, format: uuid, nullable: true }
+              cliente: { type: string }
+              destino: { $ref: '#/components/schemas/Coordenadas' }
+              tienda:
+                type: object
+                required: [id, nombre, ubicacion]
+                properties:
+                  id: { type: string, format: uuid }
+                  nombre: { type: string }
+                  ubicacion: { $ref: '#/components/schemas/Coordenadas' }
+              minutosEsperando: { type: integer, nullable: true, description: Minutos listo sin repartidor }
+        tiendas:
+          type: array
+          items:
+            type: object
+            required: [id, nombre, ubicacion]
+            properties:
+              id: { type: string, format: uuid }
+              nombre: { type: string }
+              ubicacion: { $ref: '#/components/schemas/Coordenadas' }
+
+    ResenaPanel:
+      type: object
+      required: [pedidoId, folio, estrellas, estrellasRepartidor, oculta, creadoEn, tienda, cliente]
+      properties:
+        pedidoId: { type: string, format: uuid }
+        folio: { type: string }
+        estrellas: { type: integer, minimum: 1, maximum: 5 }
+        estrellasRepartidor: { type: integer, minimum: 1, maximum: 5 }
+        comentario: { type: string, nullable: true }
+        respuesta: { type: string, nullable: true }
+        respondidoEn: { type: string, format: date-time, nullable: true }
+        creadoEn: { type: string, format: date-time }
+        oculta: { type: boolean }
+        ocultaMotivo: { type: string, nullable: true }
+        ocultaEn: { type: string, format: date-time, nullable: true }
+        ocultaPor: { type: string, nullable: true, description: Nombre de quien la ocultó }
+        tienda:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            nombre: { type: string }
+        cliente:
+          type: object
+          properties:
+            id: { type: string, format: uuid, nullable: true }
+            nombre: { type: string, nullable: true }
+
+    SeriesMetricas:
+      type: object
+      required: [porDia, porHora, topTiendas, topRepartidores, tiempos]
+      properties:
+        porDia:
+          type: array
+          items:
+            type: object
+            required: [dia, pedidos, entregados, cancelados, ventas]
+            properties:
+              dia: { type: string, format: date }
+              pedidos: { type: integer }
+              entregados: { type: integer }
+              cancelados: { type: integer }
+              ventas: { type: number }
+        porHora:
+          type: array
+          items:
+            type: object
+            required: [hora, pedidos]
+            properties:
+              hora: { type: integer, minimum: 0, maximum: 23 }
+              pedidos: { type: integer }
+        topTiendas:
+          type: array
+          items:
+            type: object
+            required: [id, nombre, pedidos, ventas]
+            properties:
+              id: { type: string, format: uuid }
+              nombre: { type: string }
+              pedidos: { type: integer }
+              ventas: { type: number }
+        topRepartidores:
+          type: array
+          items:
+            type: object
+            required: [id, nombre, entregas]
+            properties:
+              id: { type: string, format: uuid }
+              nombre: { type: string }
+              entregas: { type: integer }
+              calificacion: { type: number, nullable: true }
+        tiempos:
+          type: object
+          properties:
+            entregaMin: { type: integer, nullable: true, description: Promedio de creado a entregado }
+            preparacionMin: { type: integer, nullable: true, description: Promedio de creado a listo }
+            ticketPromedio: { type: number, nullable: true }
+            tarjeta: { type: integer }
+            efectivo: { type: integer }
+
+    AccionInterna:
+      type: object
+      required: [id, accion, metodo, ruta, estadoHttp, creadoEn, actor]
+      properties:
+        id: { type: string, format: uuid }
+        accion: { type: string, example: Baneó una cuenta }
+        metodo: { type: string, example: POST }
+        ruta: { type: string, example: /soporte/usuarios/6f1c…/banear }
+        recursoId: { type: string, format: uuid, nullable: true }
+        detalle: { type: object, nullable: true, additionalProperties: true, description: 'Cuerpo enviado, sin contraseñas ni tokens' }
+        estadoHttp: { type: integer }
+        creadoEn: { type: string, format: date-time }
+        actor:
+          type: object
+          properties:
+            id: { type: string, format: uuid, nullable: true }
+            nombre: { type: string, nullable: true }
+            rol: { type: string }
+
+    RutaViaje:
+      type: object
+      required: [fuente, puntos, metros, segundos]
+      properties:
+        fuente:
+          type: string
+          enum: [calles, linea_recta]
+          description: '`calles`: trazo real por calles. `linea_recta`: OSRM no respondió y se unen las paradas.'
+        puntos:
+          type: array
+          description: Puntos de la polilínea, en orden.
+          items: { $ref: '#/components/schemas/Coordenadas' }
+        metros: { type: integer, nullable: true, example: 3420 }
+        segundos: { type: integer, nullable: true, description: Tiempo estimado manejando, example: 540 }
 
     Viaje:
       type: object

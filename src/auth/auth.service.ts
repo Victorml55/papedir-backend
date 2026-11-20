@@ -391,6 +391,15 @@ export class AuthService {
       throw conflicto('ULTIMO_ADMIN', 'No puedes eliminar la única cuenta de admin activa');
     }
 
+    await this.anonimizar(u, u, 'A petición del usuario');
+  }
+
+  /**
+   * Borra los datos personales de una cuenta y la deja en estado "eliminado". Sus pedidos, pagos y
+   * movimientos se conservan sin nombre ni teléfono. La usan el propio usuario y un admin.
+   */
+  async anonimizar(u: Usuario, actor: Pick<Usuario, 'id' | 'rol'>, motivo: string) {
+    const tiendas = u.rol === 'tienda' ? await this.ds.getRepository(Tienda).findBy({ ownerId: u.id }) : [];
     const documentos = await this.ds.getRepository(Documento).findBy({ usuarioId: u.id });
     await this.ds.transaction(async (m) => {
       await m.update(Usuario, u.id, {
@@ -418,7 +427,7 @@ export class AuthService {
       await m.delete(CodigoVerificacion, { usuarioId: u.id });
       await m.delete(Documento, { usuarioId: u.id });
       await m.delete(Vehiculo, { repartidorId: u.id });
-      await this.bitacora.registrar(u.id, 'eliminada', u, 'A petición del usuario', m);
+      await this.bitacora.registrar(u.id, 'eliminada', actor, motivo, m);
     });
     // INE, licencia...: también se borran los archivos.
     void this.almacen.borrarPrivados(documentos.map((d) => d.ruta));

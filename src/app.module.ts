@@ -5,6 +5,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
+import { AdminModule } from './admin/admin';
 import { AuthModule } from './auth/auth.module';
 import { AuthGuard, Publico } from './common/auth';
 import { FiltroErrores } from './common/errores';
@@ -47,6 +48,7 @@ export class HealthController {
     }),
     NucleoModule,
     AuthModule,
+    AdminModule,
     DireccionesModule,
     TiendasModule,
     UploadsModule,

@@ -325,6 +325,7 @@ export async function sembrarDemo(app: INestApplication, ds: DataSource) {
     await ds.query(`UPDATE mensajes SET creado_en = creado_en - $2::interval WHERE ticket_id IN (SELECT id FROM tickets WHERE pedido_id = $1)`, [h.id, ajuste]);
     await ds.query(`UPDATE tickets SET creado_en = creado_en - $2::interval, actualizado_en = actualizado_en - $2::interval WHERE pedido_id = $1`, [h.id, ajuste]).catch(() =>
       ds.query(`UPDATE tickets SET creado_en = creado_en - $2::interval WHERE pedido_id = $1`, [h.id, ajuste]));
+    await estirar(ds, h.id);
   }
   await ds.query(`UPDATE usuarios SET creado_en = creado_en - interval '45 days' WHERE rol <> 'repartidor' OR email IN ('repartidor@papedir.test', 'repartidor2@papedir.test')`);
   await ds.query(`UPDATE tiendas SET creado_en = creado_en - interval '45 days'`);
@@ -383,3 +384,32 @@ function simularStripe(app: INestApplication) {
 
 /** PNG de 1×1 para los documentos de ejemplo. */
 const IMAGEN = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+
+/**
+ * El seed recorre el flujo en milisegundos; para que las métricas de tiempos tengan sentido se "estira"
+ * la línea de tiempo de cada pedido: todo lo que pasó entre que se creó y el último evento se reparte
+ * en 25 a 50 minutos, conservando el orden. Lo posterior (calificación, respuesta) queda unos minutos después.
+ */
+async function estirar(ds: DataSource, pedidoId: string) {
+  const [p] = await ds.query(
+    `SELECT creado_en, (SELECT max(creado_en) FROM eventos_pedido WHERE pedido_id = $1) AS fin FROM pedidos WHERE id = $1`,
+    [pedidoId],
+  );
+  if (!p?.fin) return;
+  const span = new Date(p.fin).getTime() - new Date(p.creado_en).getTime();
+  if (span <= 0) return;
+  const objetivo = (25 + Math.floor(Math.random() * 26)) * 60_000;
+  const factor = objetivo / span;
+  const estira = (col: string) => `${col} = CASE WHEN ${col} IS NULL THEN NULL
+      WHEN ${col} <= $3::timestamptz THEN $2::timestamptz + (${col} - $2::timestamptz) * $4::float8
+      ELSE ${col} + ($3::timestamptz - $2::timestamptz) * ($4::float8 - 1) END`;
+  const base = [pedidoId, p.creado_en, p.fin, factor];
+  await ds.query(
+    `UPDATE pedidos SET ${estira('listo_en')}, ${estira('entregado_en')}, ${estira('enviado_a_tienda_en')}, ${estira('actualizado_en')} WHERE id = $1`,
+    base,
+  );
+  for (const tabla of ['eventos_pedido', 'mensajes_pedido', 'movimientos', 'calificaciones']) {
+    await ds.query(`UPDATE ${tabla} SET ${estira('creado_en')} WHERE pedido_id = $1`, base);
+  }
+  await ds.query(`UPDATE viajes SET ${estira('creado_en')}, ${estira('finalizado_en')} WHERE id = (SELECT viaje_id FROM pedidos WHERE id = $1)`, base);
+}

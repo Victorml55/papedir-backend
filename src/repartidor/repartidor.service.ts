@@ -8,6 +8,7 @@ import { ESTADOS_CON_REPARTIDOR, EstadoPedido, REGLAS } from '../config/reglas';
 import { EventoPedido, Pedido, Tienda, Usuario, Vehiculo, Viaje } from '../database/entities';
 import { EnvioService } from '../nucleo/envio.service';
 import { RealtimeService } from '../nucleo/realtime.service';
+import { RutasService } from '../nucleo/rutas.service';
 import { PedidosService, vistaVehiculo } from '../pedidos/pedidos.service';
 import { DisponiblesDto, EntregaDto, VehiculoDto } from './repartidor.dto';
 
@@ -26,6 +27,7 @@ export class RepartidorService {
     @InjectRepository(Viaje) private readonly viajes: Repository<Viaje>,
     @InjectRepository(Tienda) private readonly tiendas: Repository<Tienda>,
     @InjectRepository(Vehiculo) private readonly vehiculos: Repository<Vehiculo>,
+    private readonly rutas: RutasService,
   ) {}
 
   // ─────────────────────────── vehículo y ganancias
@@ -119,6 +121,8 @@ export class RepartidorService {
     for (const p of enCurso) {
       this.rt.emitir([`pedido:${p.id}`], 'repartidor:ubicacion', { pedidoId: p.id, lat: u.lat, lng: u.lng, actualizadoEn: ahora });
     }
+    // El mapa de despacho de soporte ve a todos los repartidores que reportan.
+    this.rt.emitir(['soporte'], 'mapa:repartidor', { repartidorId, lat: u.lat, lng: u.lng, actualizadoEn: ahora });
   }
 
   // ─────────────────────────── pedidos disponibles
@@ -236,6 +240,18 @@ export class RepartidorService {
       paradas: this.ordenarParadas(vistas, rep),
       pedidos: vistas,
     };
+  }
+
+  /**
+   * Trazo por calles desde la última ubicación del repartidor por las paradas pendientes, en el orden del viaje.
+   * Sin viaje activo devuelve null (la ruta responde 204).
+   */
+  async rutaDelViaje(rep: Usuario) {
+    const viaje = await this.viajeActual(rep);
+    if (!viaje) return null;
+    const pendientes = viaje.paradas.filter((p: any) => !p.completada).map((p: any) => p.ubicacion as Punto);
+    const desde = rep.lat != null ? [{ lat: rep.lat, lng: rep.lng }] : [];
+    return this.rutas.trazar([...desde, ...pendientes]);
   }
 
   /**
