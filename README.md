@@ -44,9 +44,19 @@ Contraseña de todos: `PaPedir123!`
 | `repartidor@papedir.test` · `repartidor2@papedir.test` | repartidor | App Repartidor |
 | `soporte@papedir.test` | soporte | Web |
 | `admin@papedir.test` | admin | Web |
-| `tienda.pendiente@papedir.test` | tienda sin aprobar | App Tienda |
+| `tienda.pendiente@papedir.test` | tienda sin aprobar (con su INE por revisar) | App Tienda |
+| `repartidor.nuevo@papedir.test` | repartidor sin aprobar (con documentos por revisar) | App Repartidor |
+| `luis@`, `maria@`, `jorge@`, `sofia@`, `daniel@papedir.test` | más clientes con historial | App Cliente |
+| `cliente.baneado@papedir.test` | cliente baneado | App Cliente |
 
-El seed también crea 4 tiendas abiertas con menú y 6 pedidos listos para recoger. `npm run seed -- --reset` borra todo y vuelve a sembrar.
+El seed crea 4 tiendas abiertas con menú y una historia de 30 días hecha con la API real:
+
+- ~50 pedidos: entregados (efectivo y tarjeta, con propina y cupones), cancelados y rechazados con motivo, uno de dos tiendas en un solo carrito y 6 manuales listos para recoger.
+- Para la demo en vivo: uno nuevo que la tienda debe aceptar, uno en preparación, uno en camino con chat y uno programado para mañana.
+- Reseñas con respuestas de la tienda, tickets en todos los estados, favoritos, documentos aprobados y por revisar.
+- Zona de cobertura de Celaya, cupones (`BIENVENIDA`, `ENVIOGRATIS`, `TACOS10`), planes Premium y Pro, saldos y dos liquidaciones.
+
+Los pagos con tarjeta del seed son simulados: no crean nada en Stripe. `npm run seed -- --reset` borra todo y vuelve a sembrar; con `--basico` se omite la historia.
 
 ## Scripts
 

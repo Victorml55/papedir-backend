@@ -1,12 +1,16 @@
 /**
  * Datos de prueba para desarrollo:  npm run seed            (no hace nada si ya hay datos)
  *                                   npm run seed -- --reset (borra TODO y vuelve a sembrar)
+ *                                   npm run seed -- --reset --basico  (sin la historia de demostración)
  * Contraseña de todos los usuarios: PaPedir123!
  */
 import { NestFactory } from '@nestjs/core';
+import { ThrottlerGuard } from '@nestjs/throttler';
 import * as bcrypt from 'bcryptjs';
 import { DataSource } from 'typeorm';
 import { AppModule } from '../app.module';
+import { configurar } from '../main';
+import { sembrarDemo } from './demo';
 import { REGLAS } from '../config/reglas';
 import { PedidosService } from '../pedidos/pedidos.service';
 import { CategoriaProducto, Direccion, GrupoOpciones, HorarioTienda, Opcion, Producto, Tienda, Usuario, Vehiculo } from './entities';
@@ -50,6 +54,15 @@ const TIENDAS = [
   },
 ] as const;
 
+/** [nombre, correo, teléfono, alias, dirección, lat, lng] */
+const CLIENTES = [
+  ['Luis Hernández', 'luis@papedir.test', '4612223344', 'Casa', 'Av. Tecnológico 510, Celaya, Gto.', 20.5318, -100.8139],
+  ['María Fernanda Ruiz', 'maria@papedir.test', '4612223355', 'Depa', 'Calle Allende 88, Centro, Celaya, Gto.', 20.5255, -100.8172],
+  ['Jorge Castillo', 'jorge@papedir.test', '4612223366', 'Casa', 'Av. 12 de Octubre 402, Celaya, Gto.', 20.5148, -100.8131],
+  ['Sofía Aguilar', 'sofia@papedir.test', '4612223377', 'Casa', 'Priv. Los Olivos 14, Celaya, Gto.', 20.5236, -100.8241],
+  ['Daniel Ortiz', 'daniel@papedir.test', '4612223388', 'Oficina', 'Calle Guadalupe 77, Celaya, Gto.', 20.5268, -100.8009],
+] as const;
+
 /** Pedidos manuales listos para recoger: [índice de tienda, destinatario, dirección, lat, lng, monto a cobrar]. */
 const PEDIDOS = [
   [0, 'Luis Hernández', 'Av. Tecnológico 510, Celaya', 20.5318, -100.8139, 180],
@@ -65,7 +78,11 @@ async function main() {
   if (process.env.NODE_ENV === 'production' && !process.argv.includes('--force')) {
     throw new Error('El seed no corre en producción. Usa --force solo si de verdad quieres datos de prueba ahí.');
   }
-  const app = await NestFactory.createApplicationContext(AppModule, { logger: ['error', 'warn'] });
+  // La historia de demostración se crea llamando a la API real en un puerto local (sin límite de peticiones).
+  ThrottlerGuard.prototype.canActivate = async () => true;
+  const app = await NestFactory.create(AppModule, { logger: ['error', 'warn'] });
+  configurar(app);
+  await app.listen(0, '127.0.0.1');
   const ds = app.get(DataSource);
 
   if (reset) {
@@ -98,6 +115,17 @@ async function main() {
     { clienteId: cliente.id, alias: 'Casa', texto: 'Av. Tecnológico 1500, Celaya, Gto.', referencias: 'Portón negro', lat: 20.533, lng: -100.814 },
     { clienteId: cliente.id, alias: 'Trabajo', texto: 'Blvd. Adolfo López Mateos 800, Celaya, Gto.', referencias: null, lat: 20.521, lng: -100.8195 },
   ]);
+
+  // Más clientes, para que la historia de pedidos y las métricas se vean reales.
+  for (const [nombre, email, telefono, alias, texto, lat, lng] of CLIENTES) {
+    const c = await crear({ nombre, email, telefono, rol: 'cliente' });
+    await ds.getRepository(Direccion).save({ clienteId: c.id, alias, texto, referencias: null, lat, lng });
+  }
+  await crear({ nombre: 'Ernesto Salas', email: 'cliente.baneado@papedir.test', telefono: '4617778899', rol: 'cliente' });
+
+  // Repartidor recién registrado: espera que soporte revise sus documentos.
+  const nuevo = await crear({ nombre: 'Miguel Ortega', email: 'repartidor.nuevo@papedir.test', telefono: '4611112255', rol: 'repartidor', estado: 'pendiente_aprobacion' });
+  await ds.getRepository(Vehiculo).save({ repartidorId: nuevo.id, tipo: 'moto', marca: 'Honda', modelo: 'Cargo 150', color: 'Negro', placa: 'GTO456B' });
 
   const duenos: Usuario[] = [];
   for (const t of TIENDAS) {
@@ -156,8 +184,15 @@ async function main() {
     });
   }
 
-  console.log(`Listo: ${await usuarios.count()} usuarios, ${TIENDAS.length + 1} tiendas, ${PEDIDOS.length} pedidos listos para recoger.`);
+  if (!process.argv.includes('--basico')) {
+    console.log('Creando la historia de demostración (pedidos, pagos, tickets, reseñas)…');
+    await sembrarDemo(app, ds);
+  }
+
+  const [{ n }] = await ds.query('SELECT count(*)::int AS n FROM pedidos');
+  console.log(`Listo: ${await usuarios.count()} usuarios, ${TIENDAS.length + 1} tiendas, ${n} pedidos.`);
   console.log(`Contraseña de todos: ${PASSWORD}`);
+  await new Promise((ok) => setTimeout(ok, 2000)); // deja terminar las notificaciones en segundo plano
   await app.close();
 }
 
