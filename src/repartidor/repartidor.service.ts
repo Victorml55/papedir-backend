@@ -121,6 +121,8 @@ export class RepartidorService {
     for (const p of enCurso) {
       this.rt.emitir([`pedido:${p.id}`], 'repartidor:ubicacion', { pedidoId: p.id, lat: u.lat, lng: u.lng, actualizadoEn: ahora });
     }
+    // El mapa de despacho de soporte ve a todos los repartidores que reportan.
+    this.rt.emitir(['soporte'], 'mapa:repartidor', { repartidorId, lat: u.lat, lng: u.lng, actualizadoEn: ahora });
   }
 
   // ─────────────────────────── pedidos disponibles

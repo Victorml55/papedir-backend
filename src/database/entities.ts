@@ -311,6 +311,26 @@ export class Calificacion {
   /** Respuesta pública de la tienda a la reseña. */
   @Column({ type: 'text', nullable: true }) respuesta: string | null;
   @Column({ ...fecha, nullable: true }) respondidoEn: Date | null;
+  /** Moderación: una reseña oculta conserva sus estrellas, pero su texto ya no se muestra al público. */
+  @Column({ default: false }) oculta: boolean;
+  @Column({ type: 'text', nullable: true }) ocultaMotivo: string | null;
+  @Column({ type: 'uuid', nullable: true }) ocultaPor: string | null;
+  @Column({ ...fecha, nullable: true }) ocultaEn: Date | null;
+  @CreateDateColumn(fecha) creadoEn: Date;
+}
+
+/** Bitácora de lo que hace el equipo interno (soporte y admin) en la API. */
+@Entity('acciones_internas')
+export class AccionInterna {
+  @PrimaryGeneratedColumn('uuid') id: string;
+  @Column({ type: 'uuid', nullable: true }) actorId: string | null;
+  @Column() actorRol: string;
+  @Column() metodo: string;
+  @Column() ruta: string;
+  @Column() accion: string;
+  @Column({ type: 'uuid', nullable: true }) recursoId: string | null;
+  @Column({ type: 'jsonb', nullable: true }) detalle: Record<string, unknown> | null;
+  @Column('int') estadoHttp: number;
   @CreateDateColumn(fecha) creadoEn: Date;
 }
 
@@ -450,5 +470,4 @@ export class Mensaje {
 export const ENTIDADES = [
   Usuario, CodigoVerificacion, EventoCuenta, RefreshToken, Dispositivo, Direccion, Tienda, CategoriaProducto, Producto, Viaje, Pedido, PedidoItem,
   EventoPedido, Calificacion, Ticket, Mensaje, Vehiculo, Documento, HorarioTienda, GrupoOpciones, Opcion, Favorito, Cupon,
-  Notificacion, MensajePedido, Zona, Configuracion, Liquidacion, Movimiento, Suscripcion,
-];
+  Notificacion, MensajePedido, Zona, Configuracion, Liquidacion, Movimiento, Suscripcion, AccionInterna];
