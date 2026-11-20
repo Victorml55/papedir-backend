@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsBoolean, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, Matches, Max, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
+import { IsBoolean, IsDefined, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, Matches, Max, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
 import { CoordenadasDto } from '../common/dtos';
 
 export class DisponibilidadDto {
@@ -13,7 +13,10 @@ export class DisponiblesDto {
 }
 
 export class MarcaDto {
-  @ValidateNested() @Type(() => CoordenadasDto) ubicacion: CoordenadasDto;
+  @IsDefined({ message: 'ubicacion es obligatoria: envía { "ubicacion": { "lat": 20.52, "lng": -100.81 } }' })
+  @ValidateNested()
+  @Type(() => CoordenadasDto)
+  ubicacion: CoordenadasDto;
 }
 
 export class EntregaDto extends MarcaDto {

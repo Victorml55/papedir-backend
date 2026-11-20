@@ -20,6 +20,7 @@ import { configurar } from '../src/main';
 import { CorreoService } from '../src/nucleo/correo.service';
 import { FirebaseService, IdentidadFirebase } from '../src/nucleo/firebase.service';
 import { Intento, PagosService } from '../src/nucleo/pagos.service';
+import { RutasService } from '../src/nucleo/rutas.service';
 import { TareasService } from '../src/pedidos/tareas.service';
 
 const PASS = 'PaPedir123!';
@@ -290,6 +291,10 @@ describe('PaPedir API', () => {
     it('la geocerca de 150 m aplica en tienda y domicilio', async () => {
       const marca = (paso: string, ubicacion: any, extra: any = {}) =>
         api('post', `/repartidor/pedidos/${id.pedido}/${paso}`, id.ganador, { ubicacion, ...extra });
+      // Sin "ubicacion" (por ejemplo { lat, lng } sueltos) responde 400 con el detalle, no 500.
+      const suelta = await api('post', `/repartidor/pedidos/${id.pedido}/llegada-tienda`, id.ganador, CERCA_DE_TIENDA).expect(400);
+      expect(suelta.body.error).toBe('VALIDACION');
+      expect(JSON.stringify(suelta.body.detalles)).toContain('ubicacion es obligatoria');
       expect((await marca('llegada-tienda', mover(TIENDA, 0.003)).expect(409)).body.error).toBe('FUERA_DE_RANGO');
       await marca('llegada-tienda', CERCA_DE_TIENDA).expect(200);
       await marca('llegada-cliente', CASA).expect(409); // falta salir de la tienda
@@ -677,6 +682,36 @@ describe('PaPedir API', () => {
         if (i) expect(p.etaMin).toBeGreaterThanOrEqual(pendientes[i - 1].etaMin);
       });
       expect(viaje.pedidos[0].etaMin).toEqual(expect.any(Number));
+    });
+
+    it('la ruta por calles sale de OSRM y, si no responde, se dibuja en línea recta', async () => {
+      const rutas = app.get(RutasService) as any;
+      const fetchOriginal = global.fetch;
+      const viaje = (await api('get', '/repartidor/viaje-actual', 'rep2').expect(200)).body;
+      const pendientes = viaje.paradas.filter((p) => !p.completada).map((p) => p.ubicacion);
+      try {
+        // OSRM caído: línea recta desde la última ubicación del repartidor por las paradas pendientes.
+        global.fetch = (async () => {
+          throw new Error('sin red');
+        }) as any;
+        const recta = (await api('get', '/repartidor/viaje-actual/ruta', 'rep2').expect(200)).body;
+        expect(recta).toMatchObject({ fuente: 'linea_recta', metros: null, segundos: null });
+        expect(recta.puntos.slice(-pendientes.length)).toEqual(pendientes);
+
+        // OSRM responde: se devuelven sus puntos ({lng,lat} → {lat,lng}) con distancia y tiempo.
+        rutas.cache.clear();
+        let pedida = '';
+        global.fetch = (async (url: string) => {
+          pedida = url;
+          return { ok: true, status: 200, json: async () => ({ code: 'Ok', routes: [{ distance: 3420.4, duration: 539.6, geometry: { coordinates: [[-100.81, 20.52], [-100.812, 20.521]] } }] }) };
+        }) as any;
+        const calles = (await api('get', '/repartidor/viaje-actual/ruta', 'rep2').expect(200)).body;
+        expect(calles).toEqual({ fuente: 'calles', puntos: [{ lat: 20.52, lng: -100.81 }, { lat: 20.521, lng: -100.812 }], metros: 3420, segundos: 540 });
+        expect(pedida).toContain('/route/v1/driving/');
+      } finally {
+        global.fetch = fetchOriginal;
+        rutas.cache.clear();
+      }
     });
   });
 

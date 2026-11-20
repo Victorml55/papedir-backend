@@ -45,6 +45,14 @@ export class RepartidorController {
     return viaje ?? undefined;
   }
 
+  /** Ruta por calles desde la última ubicación reportada por las paradas pendientes; 204 sin viaje activo. */
+  @Get('viaje-actual/ruta')
+  async ruta(@Actor() u: Usuario, @Res({ passthrough: true }) res: Response) {
+    const ruta = await this.svc.rutaDelViaje(u);
+    if (!ruta) res.status(204);
+    return ruta ?? undefined;
+  }
+
   @Post('pedidos/:id/llegada-tienda') @HttpCode(200)
   llegadaTienda(@Actor() u: Usuario, @Param('id', UuidPipe) id: string, @Body() dto: MarcaDto) { return this.svc.llegadaTienda(u, id, dto.ubicacion); }
 
