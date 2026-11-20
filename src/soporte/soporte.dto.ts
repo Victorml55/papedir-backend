@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsBoolean, IsEmail, IsIn, IsISO8601, IsNotEmpty, IsOptional, IsString, MaxLength, MinLength, ValidateNested } from 'class-validator';
+import { IsBoolean, IsEmail, IsIn, IsISO8601, IsNotEmpty, IsOptional, IsString, IsUUID, MaxLength, MinLength, ValidateNested } from 'class-validator';
 import { CoordenadasDto, PaginaDto } from '../common/dtos';
 import { ESTADOS_TICKET } from '../tickets/tickets';
 
@@ -18,6 +18,8 @@ export class CorregirUbicacionDto {
 export class AtenderTicketDto {
   @IsOptional() @IsIn(ESTADOS_TICKET) estado?: string;
   @IsOptional() @IsBoolean() asignarmelo?: boolean;
+  /** Pasar el ticket a otra persona del equipo (soporte o admin). */
+  @IsOptional() @IsUUID() atendidoPor?: string;
 }
 
 export class BuscarUsuariosDto extends PaginaDto {

@@ -57,6 +57,21 @@ export class PushService {
     }
   }
 
+  /** Hay Firebase configurado: los envíos son reales; si no, solo se registran en el log. */
+  get activo() {
+    return !!this.mensajeria;
+  }
+
+  /** Aviso a un tema de FCM (llega a los dispositivos suscritos). No pasa por la bandeja de notificaciones. */
+  async aTema(tema: string, titulo: string, cuerpo: string, data: Record<string, string> = {}): Promise<'enviada' | 'simulada'> {
+    if (!this.mensajeria) {
+      this.log.debug(`[simulada] tema ${tema}: "${titulo}: ${cuerpo}"`);
+      return 'simulada';
+    }
+    await this.mensajeria.send({ topic: tema, notification: { title: titulo, body: cuerpo }, data });
+    return 'enviada';
+  }
+
   async aRoles(roles: Rol[], titulo: string, cuerpo: string, data: Record<string, string> = {}) {
     const lista = await this.usuarios.find({ where: { rol: In(roles), estado: 'activo' }, select: { id: true } });
     return this.aUsuarios(lista.map((u) => u.id), titulo, cuerpo, data);
