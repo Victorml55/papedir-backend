@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: PaPedir API
-  version: 1.7.0
+  version: 1.8.0
   description: |
     Contrato de la API de PaPedir, plataforma de reparto a domicilio en Celaya, Gto.
 
@@ -2756,6 +2756,98 @@ paths:
               schema: { $ref: '#/components/schemas/Recargos' }
         '400': { $ref: '#/components/responses/ValidationError' }
 
+  /admin/tiendas:
+    post:
+      operationId: crearTiendaAdmin
+      tags: [Admin]
+      summary: Dar de alta una tienda
+      description: "Con duenoId se agrega como sucursal de una cuenta de tienda existente; con dueno se crea la cuenta (activa y con el correo verificado). La tienda nace cerrada: el dueño decide cuándo abrir."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TiendaAdminInput' }
+      responses:
+        '201':
+          description: Creada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FichaTienda' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409':
+          description: EMAIL_REGISTRADO, DUENO_INACTIVO o LIMITE_SUCURSALES
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /admin/tiendas/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    patch:
+      operationId: editarTiendaAdmin
+      tags: [Admin]
+      summary: Corregir los datos de una tienda
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TiendaUpdate' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FichaTienda' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: TIENDA_ELIMINADA
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      operationId: eliminarTiendaAdmin
+      tags: [Admin]
+      summary: Dar de baja una tienda
+      description: Baja lógica. Deja de verse y de recibir pedidos; sus pedidos, pagos y reseñas se conservan y se puede restaurar.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [motivo]
+              properties:
+                motivo: { type: string, maxLength: 300 }
+      responses:
+        '204': { description: Dada de baja }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: TIENE_PEDIDOS_ACTIVOS o TIENDA_ELIMINADA
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /admin/tiendas/{id}/restaurar:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: restaurarTiendaAdmin
+      tags: [Admin]
+      summary: Deshacer la baja de una tienda
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FichaTienda' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: TIENDA_ACTIVA o LIMITE_SUCURSALES
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /admin/tiendas/{id}/comision:
     parameters:
       - $ref: '#/components/parameters/Id'
@@ -2984,6 +3076,7 @@ paths:
         - { name: estado, in: query, description: Estado de la cuenta del dueño, schema: { $ref: '#/components/schemas/EstadoCuenta' } }
         - { name: plan, in: query, schema: { type: string, enum: [basico, pro, premium] } }
         - { name: abierta, in: query, description: Si recibe pedidos ahora, schema: { type: string, enum: [si, no] } }
+        - { name: eliminadas, in: query, description: 'si = solo las dadas de baja (por omisión no aparecen)', schema: { type: string, enum: [si, no] } }
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/Limit'
       responses:
@@ -3697,6 +3790,29 @@ components:
         tiempoPreparacionMin: { type: integer, minimum: 5, maximum: 120 }
         copiarMenuDe: { type: string, format: uuid, description: Id de otra sucursal propia }
 
+    TiendaAdminInput:
+      type: object
+      required: [nombre, categoria, direccion, ubicacion]
+      description: Envía duenoId (cuenta de tienda existente) o dueno (cuenta nueva).
+      properties:
+        duenoId: { type: string, format: uuid }
+        dueno:
+          type: object
+          required: [nombre, email, telefono, password]
+          properties:
+            nombre: { type: string, maxLength: 80 }
+            email: { type: string, format: email }
+            telefono: { type: string, pattern: '^[0-9]{10}$' }
+            password: { type: string, minLength: 8, maxLength: 72, description: Contraseña temporal para compartir con el dueño }
+        nombre: { type: string, maxLength: 80, example: Tacos Don Pepe }
+        categoria: { $ref: '#/components/schemas/CategoriaTienda' }
+        descripcion: { type: string, maxLength: 300 }
+        imagenUrl: { type: string, maxLength: 500 }
+        telefono: { type: string, pattern: '^[0-9]{10}$' }
+        direccion: { type: string, maxLength: 200 }
+        ubicacion: { $ref: '#/components/schemas/Coordenadas' }
+        tiempoPreparacionMin: { type: integer, minimum: 5, maximum: 120 }
+
     Turno:
       type: object
       required: [dia, abre, cierra]
@@ -4222,6 +4338,8 @@ components:
         abiertaAhora: { type: boolean, description: 'Recibe pedidos en este momento (interruptor, horario y pausa)' }
         pausadaHasta: { type: string, format: date-time, nullable: true }
         comisionPct: { type: number, nullable: true, description: Comisión propia; null usa la general }
+        eliminadaEn: { type: string, format: date-time, nullable: true }
+        eliminadaMotivo: { type: string, nullable: true }
         dueno:
           type: object
           required: [id, nombre, email, estado]
@@ -4243,6 +4361,9 @@ components:
           required: [dueno, comision, ultimos30Dias, sucursales, menu, pedidos, resenas, suscripciones]
           properties:
             pausadaHasta: { type: string, format: date-time, nullable: true }
+            eliminadaEn: { type: string, format: date-time, nullable: true, description: Fecha de baja; null = activa }
+            eliminadaMotivo: { type: string, nullable: true }
+            tiempoPreparacionMin: { type: integer }
             dueno: { $ref: '#/components/schemas/Usuario' }
             comision:
               type: object

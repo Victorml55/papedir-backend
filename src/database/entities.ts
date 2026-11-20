@@ -147,6 +147,9 @@ export class Tienda {
   /** Comisión especial para esta tienda; null = la general de /admin/configuracion. */
   @Column({ type: 'numeric', precision: 5, scale: 2, nullable: true, transformer: dinero.transformer }) comisionPct: number | null;
   @Column({ type: 'numeric', precision: 3, scale: 2, nullable: true, transformer: dinero.transformer }) calificacion: number | null;
+  /** Baja lógica desde el panel: deja de verse y de recibir pedidos, pero sus pedidos pasados se conservan. */
+  @Column({ ...fecha, nullable: true }) eliminadaEn: Date | null;
+  @Column({ type: 'text', nullable: true }) eliminadaMotivo: string | null;
   @CreateDateColumn(fecha) creadoEn: Date;
 }
 

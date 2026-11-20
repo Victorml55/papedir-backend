@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, In, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, IsNull, Repository } from 'typeorm';
 import { pagina, PaginaDto, RangoFechasDto, rangoFechas } from '../common/dtos';
 import { conflicto, invalido, noEncontrado } from '../common/errores';
 import { redondear } from '../common/util';
@@ -108,21 +108,22 @@ export class TiendasService {
     return pagina(data, total, q);
   }
 
-  async porId(id: string) {
-    const t = await this.tiendas.findOneBy({ id });
+  /** Las tiendas dadas de baja solo las ve el panel (conEliminadas). */
+  async porId(id: string, conEliminadas = false) {
+    const t = await this.tiendas.findOneBy(conEliminadas ? { id } : { id, eliminadaEn: IsNull() });
     if (!t) throw noEncontrado('Tienda no encontrada');
     return t;
   }
 
   /** Detalle para el cliente: incluye el horario semanal. */
-  async detalle(id: string) {
-    const t = await this.porId(id);
+  async detalle(id: string, conEliminadas = false) {
+    const t = await this.porId(id, conEliminadas);
     return { ...(await this.vista(t)), horario: await this.turnos(t.id) };
   }
 
   /** Menú para el cliente: categorías en orden, cada una con sus productos (los agotados incluidos) y sus opciones. */
-  async menu(tiendaId: string) {
-    await this.porId(tiendaId);
+  async menu(tiendaId: string, conEliminadas = false) {
+    await this.porId(tiendaId, conEliminadas);
     const [cats, prods] = await Promise.all([
       this.categorias.find({ where: { tiendaId }, order: { orden: 'ASC', nombre: 'ASC' } }),
       this.productos.find({ where: { tiendaId, eliminado: false }, order: { nombre: 'ASC' } }),
@@ -196,21 +197,21 @@ export class TiendasService {
    */
   async deUsuario(usuarioId: string, tiendaId?: string) {
     const t = tiendaId
-      ? await this.tiendas.findOneBy({ id: tiendaId, ownerId: usuarioId })
-      : await this.tiendas.findOne({ where: { ownerId: usuarioId }, order: { creadoEn: 'ASC' } });
-    if (!t) throw noEncontrado(tiendaId ? 'Esa sucursal no es tuya' : 'Esta cuenta no tiene una tienda');
+      ? await this.tiendas.findOneBy({ id: tiendaId, ownerId: usuarioId, eliminadaEn: IsNull() })
+      : await this.tiendas.findOne({ where: { ownerId: usuarioId, eliminadaEn: IsNull() }, order: { creadoEn: 'ASC' } });
+    if (!t) throw noEncontrado(tiendaId ? 'Esa sucursal no es tuya o fue dada de baja' : 'Esta cuenta no tiene una tienda activa; escribe a soporte');
     return t;
   }
 
   async misSucursales(usuarioId: string) {
-    const ts = await this.tiendas.find({ where: { ownerId: usuarioId }, order: { creadoEn: 'ASC' } });
+    const ts = await this.tiendas.find({ where: { ownerId: usuarioId, eliminadaEn: IsNull() }, order: { creadoEn: 'ASC' } });
     const abiertas = await this.abiertasAhora(ts.map((t) => t.id));
     return ts.map((t) => vistaTienda(t, null, abiertas.get(t.id)));
   }
 
   async crearSucursal(usuario: Usuario, dto: SucursalDto) {
     if (usuario.estado !== 'activo') throw conflicto('CUENTA_PENDIENTE', 'Tu tienda está en revisión; podrás agregar sucursales cuando soporte la apruebe');
-    if ((await this.tiendas.countBy({ ownerId: usuario.id })) >= REGLAS.tienda.maxSucursales) {
+    if ((await this.tiendas.countBy({ ownerId: usuario.id, eliminadaEn: IsNull() })) >= REGLAS.tienda.maxSucursales) {
       throw conflicto('LIMITE_SUCURSALES', `Puedes tener máximo ${REGLAS.tienda.maxSucursales} sucursales`);
     }
     const origen = dto.copiarMenuDe ? await this.deUsuario(usuario.id, dto.copiarMenuDe) : null;

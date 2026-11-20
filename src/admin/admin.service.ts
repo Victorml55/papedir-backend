@@ -1,12 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
-import { DataSource, In, Not } from 'typeorm';
+import { DataSource, In, IsNull, Not } from 'typeorm';
 import { AuthService, vistaUsuario } from '../auth/auth.service';
 import { MetricasDto } from '../soporte/soporte.dto';
 import { pagina } from '../common/dtos';
 import { conflicto, invalido, noEncontrado, sinPermiso } from '../common/errores';
 import { folio } from '../common/util';
-import { ESTADOS_CON_REPARTIDOR, ESTADOS_FINALES } from '../config/reglas';
+import { ESTADOS_CON_REPARTIDOR, ESTADOS_FINALES, REGLAS } from '../config/reglas';
 import { AccionInterna, Calificacion, Pedido, RefreshToken, Tienda, Usuario, Viaje } from '../database/entities';
 import { BitacoraCuentasService } from '../nucleo/bitacora-cuentas.service';
 import { ConfiguracionService } from '../nucleo/configuracion.service';
@@ -15,6 +15,8 @@ import { RealtimeService } from '../nucleo/realtime.service';
 import { TiendasService } from '../tiendas/tiendas.service';
 import {
   BitacoraDto, EditarUsuarioDto, ListaRepartidoresDto, ListaResenasDto, ListaTiendasDto, ModerarResenaDto, NotificacionDto, PausaTiendaDto,
+  CrearTiendaAdminDto,
+  EditarTiendaAdminDto,
 } from './admin.dto';
 
 /** Inicio del día de hoy en hora de Celaya, como timestamptz. */
@@ -96,6 +98,7 @@ export class AdminService {
     if (q.plan === 'basico') filtros.push(`(t.plan = 'basico' OR t.plan_hasta IS NULL OR t.plan_hasta <= now())`);
     else if (q.plan) filtros.push(`t.plan = ${p(q.plan)} AND t.plan_hasta > now()`);
     if (SI(q.abierta) != null) filtros.push(`${SI(q.abierta) ? '' : 'NOT '}tienda_abierta_ahora(t.id)`);
+    filtros.push(SI(q.eliminadas) ? 't.eliminada_en IS NOT NULL' : 't.eliminada_en IS NULL');
 
     const desde = `FROM tiendas t JOIN usuarios u ON u.id = t.owner_id WHERE ${filtros.join(' AND ')}`;
     const [{ total }] = await this.ds.query(`SELECT count(*)::int AS total ${desde}`, params);
@@ -104,6 +107,7 @@ export class AdminService {
               CASE WHEN t.plan_hasta > now() THEN t.plan ELSE 'basico' END AS plan, t.plan_hasta AS "planHasta",
               t.calificacion::float8 AS calificacion, t.abierta, t.pausada_hasta AS "pausadaHasta", tienda_abierta_ahora(t.id) AS "abiertaAhora",
               t.comision_pct::float8 AS "comisionPct", t.creado_en AS "creadoEn",
+              t.eliminada_en AS "eliminadaEn", t.eliminada_motivo AS "eliminadaMotivo",
               json_build_object('id', u.id, 'nombre', u.nombre, 'email', u.email, 'telefono', u.telefono, 'estado', u.estado) AS "dueno",
               (SELECT count(*) FROM pedidos x WHERE x.tienda_id = t.id AND x.estado = 'entregado' AND x.entregado_en >= now() - interval '30 days')::int AS "pedidos30d",
               (SELECT coalesce(sum(x.subtotal), 0) FROM pedidos x WHERE x.tienda_id = t.id AND x.estado = 'entregado' AND x.entregado_en >= now() - interval '30 days')::float8 AS "ventas30d",
@@ -119,8 +123,8 @@ export class AdminService {
     if (!t) throw noEncontrado('Tienda no encontrada');
     const dueno = await this.ds.getRepository(Usuario).findOneByOrFail({ id: t.ownerId });
     const [base, menu, sucursales, pedidos, resenas, suscripciones, [cifras]] = await Promise.all([
-      this.tiendasSvc.detalle(id),
-      this.tiendasSvc.menu(id),
+      this.tiendasSvc.detalle(id, true),
+      this.tiendasSvc.menu(id, true),
       this.ds.query(`SELECT id, nombre, direccion FROM tiendas WHERE owner_id = $1 AND id <> $2 ORDER BY nombre`, [t.ownerId, id]),
       this.ds.query(
         `SELECT id, folio_num AS "folioNum", estado, total::float8 AS total, metodo_pago AS "metodoPago", destino_nombre AS cliente, creado_en AS "creadoEn"
@@ -146,6 +150,9 @@ export class AdminService {
     return {
       ...base,
       pausadaHasta: t.pausadaHasta && t.pausadaHasta > new Date() ? t.pausadaHasta : null,
+      eliminadaEn: t.eliminadaEn,
+      eliminadaMotivo: t.eliminadaMotivo,
+      tiempoPreparacionMin: t.tiempoPreparacionMin,
       dueno: { ...vistaUsuario(dueno) },
       comision: { propia: t.comisionPct, general, aplicada: t.comisionPct ?? general },
       ultimos30Dias: cifras,
@@ -172,6 +179,103 @@ export class AdminService {
       { tiendaId: t.id },
     );
     this.rt.emitir([`tienda:${t.id}`], 'tienda:actualizada', { tiendaId: t.id, pausadaHasta: hasta });
+    return this.tienda(id);
+  }
+
+  /**
+   * Alta de una tienda desde el panel. El dueño puede ser una cuenta de tienda existente (otra sucursal)
+   * o una cuenta nueva que nace activa y con el correo verificado: el admin ya validó al negocio.
+   */
+  async crearTienda(actor: Usuario, dto: CrearTiendaAdminDto) {
+    if (!dto.duenoId && !dto.dueno) throw invalido('Elige un dueño existente o captura los datos del nuevo', 'duenoId');
+    const usuarios = this.ds.getRepository(Usuario);
+    const tiendas = this.ds.getRepository(Tienda);
+    let dueno: Usuario | null = null;
+    if (dto.duenoId) {
+      dueno = await usuarios.findOneBy({ id: dto.duenoId });
+      if (!dueno || dueno.rol !== 'tienda') throw invalido('El dueño debe ser una cuenta con rol tienda', 'duenoId');
+      if (dueno.estado === 'eliminado' || dueno.estado === 'baneado') throw conflicto('DUENO_INACTIVO', `La cuenta de ${dueno.nombre} está ${dueno.estado}`);
+      if ((await tiendas.countBy({ ownerId: dueno.id, eliminadaEn: IsNull() })) >= REGLAS.tienda.maxSucursales) {
+        throw conflicto('LIMITE_SUCURSALES', `${dueno.nombre} ya tiene ${REGLAS.tienda.maxSucursales} sucursales activas`);
+      }
+    } else {
+      const email = dto.dueno!.email.toLowerCase().trim();
+      if (await usuarios.existsBy({ email })) throw conflicto('EMAIL_REGISTRADO', 'Ese correo ya tiene una cuenta; elígela como dueño existente');
+    }
+
+    const t = await this.ds.transaction(async (m) => {
+      if (!dueno) {
+        dueno = await m.save(
+          m.create(Usuario, {
+            nombre: dto.dueno!.nombre.trim(),
+            email: dto.dueno!.email.toLowerCase().trim(),
+            telefono: dto.dueno!.telefono,
+            rol: 'tienda',
+            estado: 'activo',
+            emailVerificadoEn: new Date(),
+            passwordHash: await bcrypt.hash(dto.dueno!.password, 10),
+          }),
+        );
+        await this.bitacora.registrar(dueno.id, 'registrada', actor, 'Creada desde el panel junto con su tienda', m);
+      }
+      const nueva = await m.save(
+        m.create(Tienda, {
+          ownerId: dueno.id, nombre: dto.nombre.trim(), categoria: dto.categoria, descripcion: dto.descripcion ?? null,
+          imagenUrl: dto.imagenUrl ?? null, telefono: dto.telefono ?? dueno.telefono ?? null, direccion: dto.direccion.trim(),
+          lat: dto.ubicacion.lat, lng: dto.ubicacion.lng, tiempoPreparacionMin: dto.tiempoPreparacionMin ?? 20, abierta: false,
+        }),
+      );
+      await this.bitacora.registrar(dueno.id, 'tienda_creada', actor, nueva.nombre, m);
+      return nueva;
+    });
+    this.rt.unir(t.ownerId, `tienda:${t.id}`);
+    return this.tienda(t.id);
+  }
+
+  /** Corregir los datos de una tienda (los mismos que edita el dueño en su app). */
+  async editarTienda(actor: Usuario, id: string, dto: EditarTiendaAdminDto) {
+    const repo = this.ds.getRepository(Tienda);
+    const t = await repo.findOneBy({ id });
+    if (!t) throw noEncontrado('Tienda no encontrada');
+    if (t.eliminadaEn) throw conflicto('TIENDA_ELIMINADA', 'Restaura la tienda antes de editarla');
+    const { ubicacion, ...resto } = dto;
+    if (resto.nombre) resto.nombre = resto.nombre.trim();
+    Object.assign(t, resto);
+    if (ubicacion) Object.assign(t, { lat: ubicacion.lat, lng: ubicacion.lng });
+    await repo.save(t);
+    await this.bitacora.registrar(t.ownerId, 'tienda_editada', actor, `${t.nombre}: ${Object.keys(dto).join(', ')}`);
+    this.rt.emitir([`tienda:${t.id}`], 'tienda:actualizada', { tiendaId: t.id });
+    return this.tienda(id);
+  }
+
+  /**
+   * Baja lógica: deja de aparecer a los clientes y de recibir pedidos; su historial, pagos y reseñas se
+   * conservan y se puede restaurar. No procede con pedidos en curso.
+   */
+  async eliminarTienda(actor: Usuario, id: string, motivo: string) {
+    const repo = this.ds.getRepository(Tienda);
+    const t = await repo.findOneBy({ id });
+    if (!t) throw noEncontrado('Tienda no encontrada');
+    if (t.eliminadaEn) throw conflicto('TIENDA_ELIMINADA', 'Esa tienda ya está dada de baja');
+    const enCurso = await this.ds.getRepository(Pedido).countBy({ tiendaId: id, estado: Not(In(ESTADOS_FINALES)) });
+    if (enCurso) throw conflicto('TIENE_PEDIDOS_ACTIVOS', `${t.nombre} tiene ${enCurso} pedido(s) en curso; termínalos o cancélalos primero`);
+    await repo.update(id, { eliminadaEn: new Date(), eliminadaMotivo: motivo.trim(), abierta: false, pausadaHasta: null });
+    await this.bitacora.registrar(t.ownerId, 'tienda_eliminada', actor, `${t.nombre}: ${motivo}`);
+    void this.push.aUsuarios([t.ownerId], `${t.nombre} fue dada de baja`, `Ya no aparece en PaPedir. Motivo: ${motivo}. Si es un error, escribe a soporte.`, { tiendaId: t.id });
+    this.rt.emitir([`tienda:${t.id}`], 'tienda:actualizada', { tiendaId: t.id, eliminada: true });
+  }
+
+  /** Deshace la baja. La tienda vuelve cerrada: el dueño decide cuándo abrir. */
+  async restaurarTienda(actor: Usuario, id: string) {
+    const repo = this.ds.getRepository(Tienda);
+    const t = await repo.findOneBy({ id });
+    if (!t) throw noEncontrado('Tienda no encontrada');
+    if (!t.eliminadaEn) throw conflicto('TIENDA_ACTIVA', 'Esa tienda no está dada de baja');
+    if ((await repo.countBy({ ownerId: t.ownerId, eliminadaEn: IsNull() })) >= REGLAS.tienda.maxSucursales) {
+      throw conflicto('LIMITE_SUCURSALES', `El dueño ya tiene ${REGLAS.tienda.maxSucursales} sucursales activas`);
+    }
+    await repo.update(id, { eliminadaEn: null, eliminadaMotivo: null });
+    await this.bitacora.registrar(t.ownerId, 'tienda_restaurada', actor, t.nombre);
     return this.tienda(id);
   }
 

@@ -38,7 +38,7 @@ export class ClienteService {
 
   async misFavoritos(cliente: Usuario) {
     const favs = await this.favoritos.find({ where: { clienteId: cliente.id }, order: { creadoEn: 'DESC' } });
-    const ts = await this.tiendas.findBy({ id: In(favs.map((f) => f.tiendaId)) });
+    const ts = await this.tiendas.findBy({ id: In(favs.map((f) => f.tiendaId)), eliminadaEn: IsNull() });
     const abiertas = await this.tiendasSvc.abiertasAhora(ts.map((t) => t.id));
     return favs.map((f) => ts.find((t) => t.id === f.tiendaId)).filter(Boolean).map((t) => vistaTienda(t, null, abiertas.get(t.id)));
   }
