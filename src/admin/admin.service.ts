@@ -7,7 +7,7 @@ import { pagina } from '../common/dtos';
 import { conflicto, invalido, noEncontrado, sinPermiso } from '../common/errores';
 import { folio } from '../common/util';
 import { ESTADOS_CON_REPARTIDOR, ESTADOS_FINALES, REGLAS } from '../config/reglas';
-import { AccionInterna, Calificacion, Pedido, RefreshToken, Tienda, Usuario, Viaje } from '../database/entities';
+import { AccionInterna, Calificacion, Pedido, RefreshToken, Tienda, Usuario, Viaje, EnvioPush } from '../database/entities';
 import { BitacoraCuentasService } from '../nucleo/bitacora-cuentas.service';
 import { ConfiguracionService } from '../nucleo/configuracion.service';
 import { PushService } from '../nucleo/push.service';
@@ -501,13 +501,17 @@ export class AdminService {
   // ─────────────────────────── notificaciones
 
   async notificar(actor: Usuario, dto: NotificacionDto) {
+    const historial = this.ds.getRepository(EnvioPush);
     if (dto.destino === 'tema') {
       const modo = await this.push.aTema(dto.tema!, dto.titulo, dto.cuerpo);
+      await historial.insert({ actorId: actor.id, destino: 'tema', tema: dto.tema!, rol: null, titulo: dto.titulo, cuerpo: dto.cuerpo, destinatarios: null, modo });
       return { destino: 'tema', tema: dto.tema, modo };
     }
     const total = await this.ds.getRepository(Usuario).countBy({ rol: dto.rol!, estado: 'activo' });
     await this.push.aRoles([dto.rol!], dto.titulo, dto.cuerpo, { tipo: 'aviso_general', enviadoPor: actor.id });
-    return { destino: 'rol', rol: dto.rol, destinatarios: total, modo: this.push.activo ? 'enviada' : 'simulada' };
+    const modo = this.push.activo ? 'enviada' : 'simulada';
+    await historial.insert({ actorId: actor.id, destino: 'rol', tema: null, rol: dto.rol!, titulo: dto.titulo, cuerpo: dto.cuerpo, destinatarios: total, modo });
+    return { destino: 'rol', rol: dto.rol, destinatarios: total, modo };
   }
 
   // ─────────────────────────── bitácora del equipo

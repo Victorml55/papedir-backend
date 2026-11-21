@@ -126,7 +126,7 @@ El mock acepta cualquier token y devuelve los ejemplos del contrato (montos y co
 
 El mock **no guarda estado ni tiene Socket.IO**: sirve para construir pantallas. Los flujos entre apps y el tiempo real se prueban con el backend real desde la semana 5.
 
-**Versión vigente del contrato: 1.9.0** (`info.version` de `docs/openapi.yaml`). Las apps deben trabajar con esa misma copia en `papedir-frontend/docs/openapi.yaml`; si su rama tiene una versión anterior, la actualizan desde `main` antes de programar algo nuevo.
+**Versión vigente del contrato: 1.10.0** (`info.version` de `docs/openapi.yaml`). Las apps deben trabajar con esa misma copia en `papedir-frontend/docs/openapi.yaml`; si su rama tiene una versión anterior, la actualizan desde `main` antes de programar algo nuevo.
 
 ### Cómo se cambia el contrato
 
@@ -272,6 +272,17 @@ Dinero en efectivo: el repartidor cobra el `total`, paga `montoAPagarTienda` a l
 **Solicitud de cuenta (tienda y repartidor):** al registrarse quedan en `pendiente_aprobacion` (`CUENTA_PENDIENTE` al intentar trabajar). Soporte o admin la aprueban (`cuenta:aprobada`) o la regresan con motivo (`cuenta:rechazada`); el motivo viene en `motivoRechazo` de `GET /auth/me`. La app muestra la pantalla "Tu cuenta está en revisión" y, si hay `motivoRechazo`, qué debe corregir (por ejemplo, volver a subir un documento).
 
 **Solicitudes de tienda (App Tienda):** un dueño ya aprobado pide otra tienda o sucursal con `POST /tiendas/solicitudes` (mismos campos que antes, más `imagenUrl` y `copiarMenuDe` opcionales). Ve el estado de las suyas con `GET /tiendas/solicitudes` (`pendiente`, `aprobada`, `rechazada` con `motivo`, `cancelada`) y puede cancelar una pendiente con `DELETE /tiendas/solicitudes/{id}`. Al aprobarse llega `solicitud_tienda:aprobada` con el `tiendaId`; la tienda nace cerrada y aparece en `GET /tiendas/mias`.
+
+### Fase 5: ubicaciones y catálogos
+
+**Capturar una ubicación (las 3 apps y la web):** siempre con el mismo patrón.
+1. Campo de texto con sugerencias mientras se escribe: `GET /geo/sugerencias?q=...&lat=&lng=` (mínimo 3 letras, esperar ~300 ms entre teclas; mandar la posición del teléfono para priorizar lo cercano). Cada sugerencia trae `texto`, `detalle` y `ubicacion`.
+2. Al elegir una, se mueve el marcador del mapa a esa `ubicacion` y el texto queda en el campo.
+3. El usuario puede afinar arrastrando o tocando el mapa; con el punto nuevo se pide `GET /geo/direccion?lat=&lng=` para actualizar el texto (si `resultado` es `null`, se deja escribir a mano).
+4. Si responde `GEO_NO_DISPONIBLE` (503), se oculta la lista y se pide marcar el punto en el mapa.
+Aplica a direcciones del cliente, la tienda (registro, edición, solicitud de sucursal) y cualquier ubicación nueva. El backend usa Photon (OpenStreetMap); si después se cambia a Google Places, las apps no cambian.
+
+**Catálogos:** `GET /catalogos` (público) trae las categorías de tienda, los motivos de cancelación, los documentos por rol y la versión de términos vigentes. Admin los edita en la web, así que las apps **no** deben tener esas listas fijas en el código: las leen de aquí (por ejemplo, el selector de categoría del registro de tienda y la lista de documentos del repartidor). `CategoriaTienda` y `TipoDocumento` ya no son enums cerrados en el contrato.
 
 ### Estados del pedido
 

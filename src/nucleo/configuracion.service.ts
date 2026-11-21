@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { REGLAS } from '../config/reglas';
+import { CATALOGO_BASE, Catalogos } from '../config/catalogos';
 import { Configuracion } from '../database/entities';
 
 export type Comisiones = { tiendaPct: number; envioPct: number };
@@ -11,12 +12,13 @@ export type Recargos = {
   demanda: { activo: boolean; pedidosEsperando: number; monto: number };
 };
 export type Cartera = { limiteDeudaTienda: number; limiteDeudaRepartidor: number; limiteDeudaCliente: number; cargoCancelacion: number };
-type Valores = { comisiones: Comisiones; recargos: Recargos; cartera: Cartera };
+type Valores = { comisiones: Comisiones; recargos: Recargos; cartera: Cartera; catalogos: Catalogos };
 
 const DEFAULTS: Valores = {
   comisiones: { ...REGLAS.comisiones },
   recargos: JSON.parse(JSON.stringify(REGLAS.recargos)),
   cartera: { ...REGLAS.cartera },
+  catalogos: structuredClone(CATALOGO_BASE),
 };
 
 /**
@@ -33,7 +35,10 @@ export class ConfiguracionService {
     if (this.cache && this.cache.hasta > Date.now()) return this.cache.valores;
     const filas = await this.repo.find();
     const valores = structuredClone(DEFAULTS);
-    for (const f of filas) if (f.clave in valores) Object.assign(valores[f.clave], f.valor);
+    for (const f of filas) {
+      if (f.clave === 'catalogos') valores.catalogos = { ...valores.catalogos, ...(f.valor as Catalogos) };
+      else if (f.clave in valores) Object.assign(valores[f.clave], f.valor);
+    }
     this.cache = { valores, hasta: Date.now() + 30000 };
     return valores;
   }

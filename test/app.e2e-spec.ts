@@ -22,6 +22,7 @@ import { FirebaseService, IdentidadFirebase } from '../src/nucleo/firebase.servi
 import { Intento, PagosService } from '../src/nucleo/pagos.service';
 import { RutasService } from '../src/nucleo/rutas.service';
 import { TareasService } from '../src/pedidos/tareas.service';
+import { GeoService } from '../src/geo/geo';
 
 const PASS = 'PaPedir123!';
 const TIENDA = { lat: 20.5222, lng: -100.8123 };
@@ -1705,6 +1706,206 @@ describe('PaPedir API', () => {
       const ok = (await api('post', `/soporte/usuarios/${id.repNuevo}/aprobar`, 'admin').expect(200)).body;
       expect(ok).toMatchObject({ estado: 'activo', motivoRechazo: null });
       await api('post', `/soporte/usuarios/${id.repNuevo}/rechazar`, 'soporte', { motivo: 'Ya no' }).expect(409);
+    });
+  });
+
+  describe('Control total del panel', () => {
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+    const sql1 = async (q: string, params: any[] = []) => (await ds.query(q, params))[0];
+
+    beforeAll(async () => {
+      await ds.query(`UPDATE tiendas SET abierta = true, pausada_hasta = NULL, usar_horario = false, eliminada_en = NULL WHERE id = $1`, [id.tiendaId]);
+    });
+
+    it('geo: sugerencias mientras se escribe y la dirección de un punto', async () => {
+      const geo = app.get(GeoService) as any;
+      const rutas: string[] = [];
+      geo.pedir = async (ruta: string) => {
+        rutas.push(ruta);
+        if (ruta.startsWith('/reverse')) {
+          return [{ geometry: { coordinates: [-100.81, 20.53] }, properties: { street: 'Av. Tecnológico', housenumber: '570', district: 'Centro', city: 'Celaya', state: 'Guanajuato', countrycode: 'MX' } }];
+        }
+        return [
+          { geometry: { coordinates: [-100.8139, 20.5318] }, properties: { name: 'Instituto Tecnológico de Celaya', street: 'Av. Tecnológico', city: 'Celaya', state: 'Guanajuato', countrycode: 'MX', osm_value: 'university' } },
+          { geometry: { coordinates: [-100.8139, 20.5318] }, properties: { name: 'Instituto Tecnológico de Celaya', street: 'Av. Tecnológico', city: 'Celaya', state: 'Guanajuato', countrycode: 'MX', osm_value: 'university' } },
+          { geometry: { coordinates: [-97.7, 30.2] }, properties: { name: 'Tecnologico St', city: 'Austin', countrycode: 'US' } },
+        ];
+      };
+      await api('get', '/geo/sugerencias?q=Tecnologico').expect(401);
+      await api('get', '/geo/sugerencias?q=Te', 'cliente').expect(400);
+      const s = (await api('get', '/geo/sugerencias?q=Tecnologico%20Celaya&lat=20.52&lng=-100.81', 'cliente').expect(200)).body;
+      expect(s).toEqual([{ texto: 'Instituto Tecnológico de Celaya, Av. Tecnológico', detalle: 'Celaya, Gto.', ubicacion: { lat: 20.5318, lng: -100.8139 }, tipo: 'university' }]);
+      expect(rutas[0]).toContain('lat=20.5200&lon=-100.8100');
+      const d = (await api('get', '/geo/direccion?lat=20.53&lng=-100.81', 'soporte').expect(200)).body;
+      expect(d.resultado).toMatchObject({ texto: 'Av. Tecnológico 570', detalle: 'Centro, Celaya, Gto.', ubicacion: { lat: 20.53, lng: -100.81 } });
+      geo.pedir = async () => { throw Object.assign(new Error('x'), {}); };
+      geo.pedir = GeoService.prototype.pedir.bind(Object.assign(Object.create(GeoService.prototype), { base: 'http://127.0.0.1:1', cache: new Map(), log: { warn: () => {} } }));
+      expect((await api('get', '/geo/sugerencias?q=algo%20nuevo', 'cliente').expect(503)).body.error).toBe('GEO_NO_DISPONIBLE');
+    });
+
+    it('admin crea cuentas de cliente y repartidor, ya verificadas', async () => {
+      const nuevo = { nombre: 'Cliente del panel', email: 'panel@prueba.test', password: 'Temporal123', rol: 'cliente' };
+      await api('post', '/admin/usuarios', 'soporte', { ...nuevo, telefono: '4610001111' }).expect(403);
+      await api('post', '/admin/usuarios', 'admin', nuevo).expect(400); // falta teléfono
+      const c = (await api('post', '/admin/usuarios', 'admin', { ...nuevo, telefono: '4610001111' }).expect(201)).body;
+      expect(c).toMatchObject({ rol: 'cliente', estado: 'activo', emailVerificado: true, terminosPendientes: true });
+      id.clientePanel = c.id;
+      const r = (await api('post', '/admin/usuarios', 'admin', { nombre: 'Repa del panel', email: 'repapanel@prueba.test', password: 'Temporal123', rol: 'repartidor', telefono: '4610002222' }).expect(201)).body;
+      expect(r).toMatchObject({ rol: 'repartidor', estado: 'activo' });
+      id.repPanel = r.id;
+      tok.clientePanel = (await api('post', '/auth/login', undefined, { email: 'panel@prueba.test', password: 'Temporal123', app: 'cliente' }).expect(200)).body.accessToken;
+    });
+
+    it('direcciones de un cliente desde el panel', async () => {
+      const dir = { alias: 'Casa', texto: 'Av. Tecnológico 1500', ubicacion: CASA };
+      await api('post', `/soporte/usuarios/${id.repPanel}/direcciones`, 'soporte', dir).expect(400); // no es cliente
+      const d = (await api('post', `/soporte/usuarios/${id.clientePanel}/direcciones`, 'soporte', dir).expect(201)).body;
+      expect((await api('patch', `/soporte/usuarios/${id.clientePanel}/direcciones/${d.id}`, 'soporte', { ...dir, referencias: 'Portón negro' }).expect(200)).body.referencias).toBe('Portón negro');
+      const otra = (await api('post', `/soporte/usuarios/${id.clientePanel}/direcciones`, 'admin', { ...dir, alias: 'Trabajo' }).expect(201)).body;
+      await api('delete', `/soporte/usuarios/${id.clientePanel}/direcciones/${otra.id}`, 'soporte').expect(204);
+      expect((await api('get', `/soporte/usuarios/${id.clientePanel}/direcciones`, 'soporte').expect(200)).body.map((x) => x.alias)).toEqual(['Casa']);
+      expect((await api('get', '/direcciones', 'clientePanel').expect(200)).body).toHaveLength(1);
+      id.dirPanel = d.id;
+      await api('get', `/soporte/usuarios/${id.clientePanel}/direcciones`, 'cliente').expect(403);
+    });
+
+    it('repartidor: vehículo, documentos a su nombre y desconectarlo', async () => {
+      const v = (await api('put', `/soporte/usuarios/${id.repPanel}/vehiculo`, 'soporte', { tipo: 'moto', color: 'Negra', placa: 'abc-123' }).expect(200)).body;
+      expect(v).toMatchObject({ tipo: 'moto', placa: 'ABC-123' });
+      const doc = (await request(http).post(`/api/v1/soporte/usuarios/${id.repPanel}/documentos`).set('Authorization', `Bearer ${tok.soporte}`)
+        .field('tipo', 'ine').field('aprobar', 'true').attach('archivo', png, { filename: 'ine.png', contentType: 'image/png' }).expect(201)).body;
+      expect(doc).toMatchObject({ tipo: 'ine', estado: 'aprobado' });
+      await api('delete', `/admin/documentos/${doc.id}`, 'soporte', { motivo: 'x' }).expect(403);
+      await api('delete', `/admin/documentos/${doc.id}`, 'admin', { motivo: 'Era de otra persona' }).expect(204);
+      expect((await api('get', `/soporte/usuarios/${id.repPanel}/documentos`, 'soporte')).body).toHaveLength(0);
+
+      const repTok = (await api('post', '/auth/login', undefined, { email: 'repapanel@prueba.test', password: 'Temporal123', app: 'repartidor' }).expect(200)).body.accessToken;
+      tok.repPanel = repTok;
+      await api('patch', '/repartidor/disponibilidad', 'repPanel', { disponible: true }).expect(200);
+      await api('post', `/soporte/repartidores/${id.repPanel}/desconectar`, 'soporte', { motivo: 'Se le olvidó desconectarse' }).expect(200);
+      expect((await sql1(`SELECT disponible FROM usuarios WHERE id = $1`, [id.repPanel])).disponible).toBe(false);
+      await api('post', `/soporte/repartidores/${id.repPanel}/desconectar`, 'soporte', { motivo: 'Otra vez' }).expect(409);
+    });
+
+    it('pedidos: crear a nombre de un cliente, editar, avanzar y asignar', async () => {
+      const carrito = { clienteId: id.clientePanel, tiendaId: id.tiendaId, direccionId: id.dirPanel, items: [{ productoId: id.pastor, cantidad: 2, opciones: [id.verde] }] };
+      const cot = (await api('post', '/soporte/pedidos/cotizar', 'soporte', carrito).expect(200)).body;
+      const p = (await api('post', '/soporte/pedidos', 'soporte', { ...carrito, notas: 'Tocar fuerte' }).expect(201)).body;
+      expect(p).toMatchObject({ estado: 'creado', metodoPago: 'efectivo', total: cot.total, clienteId: id.clientePanel, notas: 'Tocar fuerte' });
+      await api('post', '/soporte/pedidos', 'soporte', { ...carrito, clienteId: id.repPanel }).expect(400);
+
+      const e = (await api('patch', `/soporte/pedidos/${p.id}`, 'soporte', { propina: 15, destinoReferencias: 'Casa azul', motivo: 'El cliente llamó' }).expect(200)).body;
+      expect(e).toMatchObject({ propina: 15, total: cot.total + 15, destino: expect.objectContaining({ referencias: 'Casa azul' }) });
+      await api('patch', `/soporte/pedidos/${p.id}`, 'soporte', { motivo: 'Nada' }).expect(400);
+
+      expect((await api('post', `/soporte/pedidos/${p.id}/avanzar`, 'soporte', { motivo: 'La tienda lo aceptó por teléfono' }).expect(200)).body.estado).toBe('aceptado_tienda');
+      expect((await api('post', `/soporte/pedidos/${p.id}/avanzar`, 'soporte', { motivo: 'Ya está listo' }).expect(200)).body.estado).toBe('listo_para_recoger');
+      expect((await api('post', `/soporte/pedidos/${p.id}/avanzar`, 'soporte', { motivo: 'x' }).expect(409)).body.message).toContain('asígnalo');
+
+      expect((await api('post', `/soporte/pedidos/${p.id}/asignar`, 'soporte', { repartidorId: id.repPanel, motivo: 'Está cerca' }).expect(409)).body.error).toBe('REPARTIDOR_DESCONECTADO');
+      await api('patch', '/repartidor/disponibilidad', 'repPanel', { disponible: true }).expect(200);
+      const a = (await api('post', `/soporte/pedidos/${p.id}/asignar`, 'soporte', { repartidorId: id.repPanel, motivo: 'Está cerca' }).expect(200)).body;
+      expect(a).toMatchObject({ estado: 'asignado', repartidor: expect.objectContaining({ id: id.repPanel }) });
+      expect((await api('post', `/soporte/pedidos/${p.id}/avanzar`, 'soporte', { motivo: 'Llegó y no marcó' }).expect(200)).body.estado).toBe('en_tienda');
+      await api('post', `/soporte/pedidos/${p.id}/completar`, 'soporte', { motivo: 'Entregado' }).expect(200);
+      const eventos = (await api('get', `/pedidos/${p.id}/eventos`, 'soporte')).body.map((x) => x.tipo);
+      expect(eventos).toEqual(expect.arrayContaining(['creado_por_soporte', 'editado_por_soporte', 'avanzado_por_soporte', 'asignado_por_soporte']));
+      await api('patch', `/soporte/pedidos/${p.id}`, 'soporte', { propina: 0, motivo: 'x' }).expect(409); // ya terminó
+      const historial = (await api('get', `/soporte/pedidos?clienteId=${id.clientePanel}`, 'soporte').expect(200)).body;
+      expect(historial.data.map((x) => x.id)).toEqual([p.id]);
+      id.pedidoPanel = p.id;
+    });
+
+    it('tickets: abrir a nombre de alguien, prioridad, asunto y borrar mensajes', async () => {
+      const t = (await api('post', '/soporte/tickets', 'soporte', { usuarioId: id.clientePanel, asunto: 'Llamó por teléfono', descripcion: 'Dice que faltó salsa', pedidoId: id.pedidoPanel }).expect(201)).body;
+      expect(t).toMatchObject({ estado: 'abierto', prioridad: 'normal', creadoPor: expect.objectContaining({ id: id.clientePanel }) });
+      await api('post', '/soporte/tickets', 'soporte', { usuarioId: id.soporte, asunto: 'X', descripcion: 'Y' }).expect(400);
+      const e = (await api('patch', `/soporte/tickets/${t.id}`, 'soporte', { asunto: 'Faltó salsa en R-pedido', prioridad: 'alta' }).expect(200)).body;
+      expect(e).toMatchObject({ asunto: 'Faltó salsa en R-pedido', prioridad: 'alta' });
+      const m = (await api('post', `/tickets/${t.id}/mensajes`, 'clientePanel', { texto: 'Mensaje con groserías' }).expect(201)).body;
+      await api('delete', `/admin/tickets/${t.id}/mensajes/${m.id}`, 'soporte', { motivo: 'x' }).expect(403);
+      await api('delete', `/admin/tickets/${t.id}/mensajes/${m.id}`, 'admin', { motivo: 'Lenguaje ofensivo' }).expect(204);
+      expect((await api('get', `/tickets/${t.id}/mensajes`, 'soporte')).body.data ?? (await api('get', `/tickets/${t.id}/mensajes`, 'soporte')).body).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: m.id })]));
+      expect((await api('patch', `/soporte/tickets/${t.id}`, 'soporte', { estado: 'resuelto' }).expect(200)).body.estado).toBe('resuelto');
+      expect((await api('patch', `/soporte/tickets/${t.id}`, 'soporte', { estado: 'abierto' }).expect(200)).body.estado).toBe('abierto'); // reabrir
+    });
+
+    it('menú y horario de cualquier tienda desde el panel', async () => {
+      const cat = (await api('post', `/soporte/tiendas/${id.tiendaId}/categorias`, 'soporte', { nombre: 'Bebidas del panel' }).expect(201)).body;
+      const prod = (await api('post', `/soporte/tiendas/${id.tiendaId}/productos`, 'admin', { categoriaId: cat.id, nombre: 'Agua de horchata', precio: 25 }).expect(201)).body;
+      expect((await api('get', '/tiendas/mia/productos', 'tienda')).body.map((x) => x.nombre)).toContain('Agua de horchata');
+      expect((await api('patch', `/soporte/productos/${prod.id}`, 'soporte', { precio: 28, stock: 10 }).expect(200)).body).toMatchObject({ precio: 28, stock: 10 });
+      const op = (await api('put', `/soporte/productos/${prod.id}/opciones`, 'soporte', { grupos: [{ nombre: 'Tamaño', minimo: 1, maximo: 1, opciones: [{ nombre: 'Chico' }, { nombre: 'Grande', precioExtra: 10 }] }] }).expect(200)).body;
+      expect(op.grupos[0].opciones).toHaveLength(2);
+      const otraTienda = (await sql1(`SELECT id FROM tiendas WHERE id <> $1 AND eliminada_en IS NULL LIMIT 1`, [id.tiendaId])).id;
+      await api('post', `/soporte/tiendas/${otraTienda}/productos`, 'soporte', { categoriaId: cat.id, nombre: 'X', precio: 1 }).expect(400);
+      await api('delete', `/soporte/categorias/${cat.id}`, 'soporte').expect(409); // tiene productos
+      await api('delete', `/soporte/productos/${prod.id}`, 'soporte').expect(204);
+      await api('delete', `/soporte/categorias/${cat.id}`, 'soporte').expect(204);
+      const h = (await api('put', `/soporte/tiendas/${id.tiendaId}/horario`, 'soporte', { usarHorario: false, turnos: [{ dia: 1, abre: '09:00', cierra: '22:00' }] }).expect(200)).body;
+      expect(h).toMatchObject({ usarHorario: false, turnos: [expect.objectContaining({ dia: 1, abre: '09:00' })] });
+      expect((await api('get', `/soporte/tiendas/${id.tiendaId}/categorias`, 'soporte').expect(200)).body.length).toBeGreaterThan(0);
+    });
+
+    it('cartera: ajuste manual y anular una liquidación', async () => {
+      await api('post', `/admin/usuarios/${id.clientePanel}/ajuste`, 'soporte', { monto: 50, motivo: 'x' }).expect(403);
+      await api('post', `/admin/usuarios/${id.clientePanel}/ajuste`, 'admin', { monto: 0, motivo: 'Nada' }).expect(400);
+      const c = (await api('post', `/admin/usuarios/${id.clientePanel}/ajuste`, 'admin', { monto: 50, motivo: 'Compensación por demora' }).expect(201)).body;
+      expect(c).toMatchObject({ saldo: 50, estado: 'a_favor' });
+      expect((await api('post', `/admin/usuarios/${id.clientePanel}/ajuste`, 'admin', { monto: -50, motivo: 'Se capturó dos veces' }).expect(201)).body.saldo).toBe(0);
+      const antes = (await api('get', '/cartera', 'repPanel')).body.saldo;
+      const l = (await api('post', '/admin/liquidaciones', 'admin', { usuarioId: id.repPanel, sentido: 'pago', monto: 20, metodo: 'efectivo' }).expect(201)).body;
+      expect((await api('get', '/cartera', 'repPanel')).body.saldo).toBeCloseTo(antes - 20, 2);
+      const an = (await api('post', `/admin/liquidaciones/${l.id}/anular`, 'admin', { motivo: 'Se registró al repartidor equivocado' }).expect(200)).body;
+      expect(an).toMatchObject({ anuladaMotivo: 'Se registró al repartidor equivocado' });
+      expect(an.saldo).toBeCloseTo(antes, 2);
+      await api('post', `/admin/liquidaciones/${l.id}/anular`, 'admin', { motivo: 'Otra vez' }).expect(409);
+      expect((await api('get', `/admin/liquidaciones?usuarioId=${id.repPanel}`, 'admin')).body.data[0].anuladaEn).toEqual(expect.any(String));
+    });
+
+    it('catálogos editables: categorías, motivos, documentos y versión de términos', async () => {
+      const base = (await api('get', '/admin/catalogos', 'admin').expect(200)).body;
+      await api('get', '/admin/catalogos', 'soporte').expect(403);
+      const nuevo = structuredClone(base);
+      nuevo.categorias.push({ codigo: 'mascotas', nombre: 'Mascotas', activa: true });
+      nuevo.motivos.cliente.find((m) => m.codigo === 'tarda_demasiado').activo = false;
+      nuevo.documentos.repartidor.push({ tipo: 'seguro_moto', nombre: 'Póliza de seguro', obligatorio: false });
+      await api('put', '/admin/catalogos', 'admin', { ...nuevo, categorias: nuevo.categorias.filter((c) => c.codigo !== 'comida') }).expect(400);
+      const sinOtro = structuredClone(nuevo);
+      sinOtro.motivos.cliente.find((m) => m.codigo === 'otro').activo = false;
+      await api('put', '/admin/catalogos', 'admin', sinOtro).expect(400);
+      await api('put', '/admin/catalogos', 'admin', nuevo).expect(200);
+
+      const pub = (await api('get', '/catalogos').expect(200)).body;
+      expect(pub.categorias.map((c) => c.codigo)).toContain('mascotas');
+      expect(pub.motivos.cliente.map((m) => m.codigo)).not.toContain('tarda_demasiado');
+      expect((await api('get', '/catalogos/motivos-cancelacion')).body.cliente.map((m) => m.codigo)).not.toContain('tarda_demasiado');
+      expect((await api('patch', `/admin/tiendas/${id.tiendaId}`, 'admin', { categoria: 'mascotas' }).expect(200)).body.categoria).toBe('mascotas');
+      await api('patch', `/admin/tiendas/${id.tiendaId}`, 'admin', { categoria: 'inventada' }).expect(400);
+      expect((await api('get', '/documentos', 'repPanel').expect(200)).body.map((d) => d.tipo)).toContain('seguro_moto');
+
+      // Nueva versión de términos: todos deben aceptarlos otra vez.
+      await api('put', '/admin/catalogos', 'admin', { ...nuevo, legal: { versionTerminos: '2099-01' } }).expect(200);
+      expect((await api('get', '/auth/me', 'clientePanel')).body.terminosPendientes).toBe(true);
+      expect((await api('get', '/legal')).body.version).toBe('2099-01');
+
+      await api('patch', `/admin/tiendas/${id.tiendaId}`, 'admin', { categoria: 'comida' }).expect(200);
+      await api('put', '/admin/catalogos', 'admin', { ...base, categorias: [...base.categorias, { codigo: 'mascotas', nombre: 'Mascotas', activa: false }], documentos: { ...base.documentos, repartidor: [...base.documentos.repartidor, { tipo: 'seguro_moto', nombre: 'Póliza de seguro', obligatorio: false }] } }).expect(200);
+    });
+
+    it('historial de notificaciones y borrar una reseña falsa', async () => {
+      await api('post', '/admin/notificaciones', 'admin', { destino: 'rol', rol: 'repartidor', titulo: 'Hoy llueve', cuerpo: 'Maneja con cuidado' }).expect(200);
+      const h = (await api('get', '/admin/notificaciones', 'admin').expect(200)).body;
+      expect(h.data[0]).toMatchObject({ destino: 'rol', rol: 'repartidor', titulo: 'Hoy llueve', actor: expect.objectContaining({ id: id.admin }) });
+      await api('get', '/admin/notificaciones', 'soporte').expect(403);
+
+      const r = await sql1(`SELECT c.pedido_id AS id, c.tienda_id AS tienda FROM calificaciones c LIMIT 1`);
+      await api('delete', `/admin/resenas/${r.id}`, 'admin', {}).expect(400);
+      await api('delete', `/admin/resenas/${r.id}`, 'admin', { motivo: 'Reseña falsa' }).expect(204);
+      expect(await sql1(`SELECT 1 AS x FROM calificaciones WHERE pedido_id = $1`, [r.id])).toBeUndefined();
+      await api('delete', `/admin/resenas/${r.id}`, 'admin', { motivo: 'Otra' }).expect(404);
+      const acciones = (await api('get', '/admin/bitacora?q=reseña', 'admin')).body.data.map((a) => a.accion);
+      expect(acciones).toContain('Borró una reseña');
     });
   });
 });

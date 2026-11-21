@@ -1,3 +1,4 @@
+import { versionTerminos } from '../config/catalogos';
 import { Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -36,7 +37,7 @@ export const vistaUsuario = (u: Usuario) => ({
   estado: u.estado,
   fotoUrl: u.fotoUrl ?? null,
   emailVerificado: !!u.emailVerificadoEn,
-  terminosPendientes: u.terminosVersion !== REGLAS.legal.versionTerminos,
+  terminosPendientes: u.terminosVersion !== versionTerminos(),
   calificacion: u.calificacion ?? null,
   /** local (correo de PaPedir), password (correo de Firebase), google.com, github.com... */
   proveedor: u.proveedor ?? 'local',
@@ -89,12 +90,12 @@ export class AuthService {
           passwordHash: await bcrypt.hash(dto.password, 10),
           // Tiendas y repartidores esperan la aprobación de soporte.
           estado: dto.rol === 'cliente' ? 'activo' : 'pendiente_aprobacion',
-          terminosVersion: REGLAS.legal.versionTerminos,
+          terminosVersion: versionTerminos(),
           terminosAceptadosEn: new Date(),
         }),
       );
       if (dto.rol === 'tienda') await this.crearTienda(m, u, dto.tienda, dto.telefono);
-      await this.bitacora.registrar(u.id, 'registrada', u, `Aceptó términos ${REGLAS.legal.versionTerminos}`, m);
+      await this.bitacora.registrar(u.id, 'registrada', u, `Aceptó términos ${versionTerminos()}`, m);
       return u;
     });
     // Si el correo falla, la cuenta se crea igual: puede pedir otro código después.
@@ -161,7 +162,7 @@ export class AuthService {
             // Nunca se usa: la contraseña la maneja Firebase.
             passwordHash: await bcrypt.hash(randomBytes(32).toString('hex'), 4),
             estado: dto.app === 'cliente' ? 'activo' : 'pendiente_aprobacion',
-            terminosVersion: REGLAS.legal.versionTerminos,
+            terminosVersion: versionTerminos(),
             terminosAceptadosEn: new Date(),
             emailVerificadoEn: f.emailVerificado ? new Date() : null,
             fotoUrl: f.foto,
@@ -170,7 +171,7 @@ export class AuthService {
           }),
         );
         if (dto.app === 'tienda') await this.crearTienda(m, nuevo, r.tienda, r.telefono);
-        await this.bitacora.registrar(nuevo.id, 'registrada', nuevo, `Con Firebase (${f.proveedor}); aceptó términos ${REGLAS.legal.versionTerminos}`, m);
+        await this.bitacora.registrar(nuevo.id, 'registrada', nuevo, `Con Firebase (${f.proveedor}); aceptó términos ${versionTerminos()}`, m);
         return nuevo;
       });
       return this.sesion(u);
@@ -353,8 +354,8 @@ export class AuthService {
   }
 
   async aceptarTerminos(u: Usuario, version: string) {
-    if (version !== REGLAS.legal.versionTerminos) {
-      throw conflicto('VERSION_TERMINOS', `La versión vigente es ${REGLAS.legal.versionTerminos}; vuelve a cargar los términos`);
+    if (version !== versionTerminos()) {
+      throw conflicto('VERSION_TERMINOS', `La versión vigente es ${versionTerminos()}; vuelve a cargar los términos`);
     }
     Object.assign(u, { terminosVersion: version, terminosAceptadosEn: new Date() });
     await this.usuarios.update(u.id, { terminosVersion: version, terminosAceptadosEn: u.terminosAceptadosEn });
@@ -365,7 +366,7 @@ export class AuthService {
   legal() {
     const web = (process.env.LEGAL_URL_BASE ?? 'https://papedir-frontend.vercel.app').replace(/\/+$/, '');
     return {
-      version: REGLAS.legal.versionTerminos,
+      version: versionTerminos(),
       avisoPrivacidadUrl: `${web}/privacidad`,
       terminosUrl: `${web}/terminos`,
     };

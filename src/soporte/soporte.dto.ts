@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsBoolean, IsEmail, IsIn, IsISO8601, IsNotEmpty, IsOptional, IsString, IsUUID, MaxLength, MinLength, ValidateNested } from 'class-validator';
+import { IsBoolean, IsEmail, IsIn, IsISO8601, IsNotEmpty, IsOptional, IsString, IsUUID, Matches, MaxLength, MinLength, ValidateIf, ValidateNested } from 'class-validator';
 import { CoordenadasDto, PaginaDto } from '../common/dtos';
 import { ESTADOS_TICKET } from '../tickets/tickets';
 import { MotivoCancelacionDto } from '../pedidos/pedidos.dto';
@@ -26,6 +26,10 @@ export class BuscarPedidosDto extends PaginaDto {
   @IsOptional() @IsString() estado?: string;
   /** Folio, nombre o teléfono. */
   @IsOptional() @IsString() @MaxLength(60) q?: string;
+  /** Historial de una cuenta o una tienda. */
+  @IsOptional() @IsUUID() clienteId?: string;
+  @IsOptional() @IsUUID() repartidorId?: string;
+  @IsOptional() @IsUUID() tiendaId?: string;
 }
 
 export class CorregirUbicacionDto {
@@ -39,6 +43,8 @@ export class AtenderTicketDto {
   @IsOptional() @IsBoolean() asignarmelo?: boolean;
   /** Pasar el ticket a otra persona del equipo (soporte o admin). */
   @IsOptional() @IsUUID() atendidoPor?: string;
+  @IsOptional() @IsString() @IsNotEmpty() @MaxLength(120) asunto?: string;
+  @IsOptional() @IsIn(['baja', 'normal', 'alta', 'urgente']) prioridad?: 'baja' | 'normal' | 'alta' | 'urgente';
 }
 
 export class BuscarUsuariosDto extends PaginaDto {
@@ -47,11 +53,13 @@ export class BuscarUsuariosDto extends PaginaDto {
   @IsOptional() @IsString() @MaxLength(60) q?: string;
 }
 
+/** Cuenta creada por admin: del equipo o, desde el panel de control, un cliente o repartidor (las tiendas van por /admin/tiendas). */
 export class UsuarioInternoDto {
   @IsString() @IsNotEmpty() @MaxLength(80) nombre: string;
   @IsEmail() email: string;
   @IsString() @MinLength(8) @MaxLength(72) password: string;
-  @IsIn(['soporte', 'admin']) rol: 'soporte' | 'admin';
+  @IsIn(['soporte', 'admin', 'cliente', 'repartidor']) rol: 'soporte' | 'admin' | 'cliente' | 'repartidor';
+  @ValidateIf((o) => o.rol === 'cliente' || o.rol === 'repartidor') @Matches(/^[0-9]{10}$/, { message: 'telefono debe tener 10 dígitos' }) telefono?: string;
 }
 
 export class MetricasDto {
