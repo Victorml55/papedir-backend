@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: PaPedir API
-  version: 1.10.1
+  version: 1.10.2
   description: |
     Contrato de la API de PaPedir, plataforma de reparto a domicilio en Celaya, Gto.
 
@@ -1935,6 +1935,10 @@ paths:
       operationId: listarRepartidorHistorial
       tags: [Repartidor]
       summary: Pedidos entregados por mí
+      description: |
+        Pedidos ya terminados, del más reciente al más antiguo. En pedidos terminados `tienda.telefono` y
+        `destino.telefono` vienen en `null` (privacidad). `resumen` es de toda la vida del repartidor:
+        úsalo para el encabezado en vez de sumar la página cargada.
       parameters:
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/Limit'
@@ -1945,11 +1949,19 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [data, meta, resumen]
                 properties:
                   data:
                     type: array
                     items: { $ref: '#/components/schemas/Pedido' }
                   meta: { $ref: '#/components/schemas/PaginaMeta' }
+                  resumen:
+                    type: object
+                    required: [entregas, propinas, gananciaNeta]
+                    properties:
+                      entregas: { type: integer, description: Pedidos entregados en total }
+                      propinas: { type: number }
+                      gananciaNeta: { type: number, description: 'Envío + propinas − comisión de PaPedir + cupones que PaPedir le reembolsa' }
 
   # ─────────────────────────── ARCHIVOS ───────────────────────────
   /documentos:
@@ -4583,7 +4595,7 @@ components:
         categoria: { $ref: '#/components/schemas/CategoriaTienda' }
         descripcion: { type: string, nullable: true }
         imagenUrl: { type: string, nullable: true }
-        telefono: { type: string, example: '4615550000' }
+        telefono: { type: string, nullable: true, example: '4615550000' }
         direccion: { type: string, example: 'Calle Hidalgo 120, Celaya' }
         ubicacion: { $ref: '#/components/schemas/Coordenadas' }
         abierta: { type: boolean, example: true, description: Interruptor general que maneja la tienda }
@@ -4968,7 +4980,7 @@ components:
       type: object
       required: [destino, descripcion, montoACobrar]
       properties:
-        destino: { $ref: '#/components/schemas/Destino' }
+        destino: { $ref: '#/components/schemas/DestinoInput' }
         descripcion: { type: string, example: 1 paquete de ropa }
         montoACobrar:
           type: number
@@ -4982,9 +4994,19 @@ components:
       required: [nombre, telefono, direccion, ubicacion]
       properties:
         nombre: { type: string, example: Luis Hernández }
-        telefono: { type: string, example: '4619876543' }
+        telefono: { type: string, nullable: true, example: '4619876543', description: null cuando el pedido ya terminó o quien consulta no debe verlo }
         direccion: { type: string, example: 'Av. Irrigación 300, Celaya' }
         referencias: { type: string, nullable: true }
+        ubicacion: { $ref: '#/components/schemas/Coordenadas' }
+
+    DestinoInput:
+      type: object
+      required: [nombre, telefono, direccion, ubicacion]
+      properties:
+        nombre: { type: string, maxLength: 80, example: Luis Hernández }
+        telefono: { type: string, pattern: '^[0-9]{10}$', example: '4619876543' }
+        direccion: { type: string, maxLength: 200, example: 'Av. Irrigación 300, Celaya' }
+        referencias: { type: string, maxLength: 200, nullable: true }
         ubicacion: { $ref: '#/components/schemas/Coordenadas' }
 
     TiendaResumen:
@@ -4992,7 +5014,7 @@ components:
       properties:
         id: { type: string, format: uuid }
         nombre: { type: string, example: Tacos Don Pepe }
-        telefono: { type: string, example: '4615550000' }
+        telefono: { type: string, nullable: true, example: '4615550000', description: null cuando el pedido ya terminó o quien consulta no debe verlo }
         direccion: { type: string }
         ubicacion: { $ref: '#/components/schemas/Coordenadas' }
 
@@ -5002,7 +5024,7 @@ components:
       properties:
         id: { type: string, format: uuid }
         nombre: { type: string, example: Carlos Ruiz }
-        telefono: { type: string, example: '4611112233' }
+        telefono: { type: string, nullable: true, example: '4611112233' }
         ubicacion:
           type: object
           nullable: true
