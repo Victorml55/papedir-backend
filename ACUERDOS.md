@@ -126,7 +126,7 @@ El mock acepta cualquier token y devuelve los ejemplos del contrato (montos y co
 
 El mock **no guarda estado ni tiene Socket.IO**: sirve para construir pantallas. Los flujos entre apps y el tiempo real se prueban con el backend real desde la semana 5.
 
-**Versión vigente del contrato: 1.10.0** (`info.version` de `docs/openapi.yaml`). Las apps deben trabajar con esa misma copia en `papedir-frontend/docs/openapi.yaml`; si su rama tiene una versión anterior, la actualizan desde `main` antes de programar algo nuevo.
+**Versión vigente del contrato: 1.10.1** (`info.version` de `docs/openapi.yaml`). Las apps deben trabajar con esa misma copia en `papedir-frontend/docs/openapi.yaml`; si su rama tiene una versión anterior, la actualizan desde `main` antes de programar algo nuevo.
 
 ### Cómo se cambia el contrato
 
@@ -171,7 +171,7 @@ Todas las respuestas de error tienen la misma forma:
 
 | Código | Significado | Qué hace la app |
 |---|---|---|
-| 400 | Datos inválidos (`error: "VALIDACION"`) | Mostrar `detalles` junto a cada campo |
+| 400 | Datos inválidos (`error: "VALIDACION"`) | Mostrar `detalles` junto a cada campo. Desde 1.10.1 los mensajes vienen en español (`"telefono debe tener 10 dígitos"`, `"nombre debe tener como máximo 80 caracteres"`) y `message` incluye el primero (`"Datos inválidos: …"`), así que mostrar `message` ya basta si la pantalla no ubica cada campo |
 | 401 | Token expirado o inválido | Llamar `/auth/refresh` una vez y reintentar; si falla, mandar al login |
 | 403 | Sin permiso, app equivocada o cuenta baneada | Mostrar `message` y cerrar sesión si está baneado |
 | 404 | No existe | Mensaje y regresar |
@@ -283,6 +283,8 @@ Dinero en efectivo: el repartidor cobra el `total`, paga `montoAPagarTienda` a l
 Aplica a direcciones del cliente, la tienda (registro, edición, solicitud de sucursal) y cualquier ubicación nueva. El backend usa Photon (OpenStreetMap); si después se cambia a Google Places, las apps no cambian.
 
 **Catálogos:** `GET /catalogos` (público) trae las categorías de tienda, los motivos de cancelación, los documentos por rol y la versión de términos vigentes. Admin los edita en la web, así que las apps **no** deben tener esas listas fijas en el código: las leen de aquí (por ejemplo, el selector de categoría del registro de tienda y la lista de documentos del repartidor). `CategoriaTienda` y `TipoDocumento` ya no son enums cerrados en el contrato.
+
+**Límites que las apps deben respetar en sus formularios (1.10.1):** teléfonos de 10 dígitos exactos (solo números, lada incluida); todo `motivo` hasta 500 caracteres; propina hasta $500 (crear y editar); precios con hasta 2 decimales (no limitar el campo a pasos de 0.5); nombre de categoría de menú hasta 40; búsquedas (`q`) hasta 60. Validar en el formulario evita que el usuario se entere hasta que el backend responde 400.
 
 ### Estados del pedido
 

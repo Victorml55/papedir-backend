@@ -13,7 +13,7 @@ import { pagina, PaginaDto } from '../common/dtos';
 import { conflicto, invalido, noEncontrado } from '../common/errores';
 import { redondear, UuidPipe } from '../common/util';
 import { aplicarCatalogo, CATALOGO, CATALOGO_BASE, Catalogos } from '../config/catalogos';
-import { ESTADOS_FINALES, EstadoPedido } from '../config/reglas';
+import { ESTADOS_FINALES, EstadoPedido, REGLAS } from '../config/reglas';
 import {
   CategoriaProducto, Calificacion, Documento, EnvioPush, EventoPedido, Liquidacion, Mensaje, Movimiento, Pedido, Producto, Tienda, Usuario,
 } from '../database/entities';
@@ -57,7 +57,7 @@ export class EditarPedidoDto {
   @IsOptional() @Matches(/^[0-9]{10}$/, { message: 'destinoTelefono debe tener 10 dígitos' }) destinoTelefono?: string;
   @IsOptional() @IsString() @MaxLength(200) destinoReferencias?: string | null;
   /** Solo pedidos en efectivo que no han terminado: el total se ajusta solo. */
-  @IsOptional() @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) @Max(1000) propina?: number;
+  @IsOptional() @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) @Max(REGLAS.pedido.propinaMax) propina?: number;
   @IsString() @IsNotEmpty() @MaxLength(500) motivo: string;
 }
 
@@ -74,7 +74,7 @@ export class TicketAdminDto extends TicketDto {
 export class AjusteDto {
   /** + abona a su favor; − le carga. */
   @IsNumber({ maxDecimalPlaces: 2 }) @Min(-100000) @Max(100000) monto: number;
-  @IsString() @IsNotEmpty() @MaxLength(300) motivo: string;
+  @IsString() @IsNotEmpty() @MaxLength(500) motivo: string;
 }
 
 export class DocumentoAdminDto {

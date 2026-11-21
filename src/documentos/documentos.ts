@@ -23,7 +23,7 @@ export class DocumentoDto {
 export class RevisionDto {
   @IsBoolean() aprobado: boolean;
   /** Obligatorio al rechazar: el usuario lo ve para saber qué corregir. */
-  @ValidateIf((o) => o.aprobado === false) @IsString() @IsNotEmpty() @MaxLength(300) motivo?: string;
+  @ValidateIf((o) => o.aprobado === false) @IsString() @IsNotEmpty() @MaxLength(500) motivo?: string;
 }
 
 export const vistaDocumento = (d: Documento) => ({

@@ -1908,4 +1908,30 @@ describe('PaPedir API', () => {
       expect(acciones).toContain('Borró una reseña');
     });
   });
+  describe('Auditoría: mensajes y límites', () => {
+    it('los errores de validación vienen en español y dicen qué campo corregir', async () => {
+      const r = (await api('post', '/auth/login', undefined, { email: 'no-es-correo', app: 'web' }).expect(400)).body;
+      expect(r.error).toBe('VALIDACION');
+      expect(r.message).toBe('Datos inválidos: email no es un correo válido');
+      expect(r.detalles).toEqual(expect.arrayContaining([
+        { campo: 'email', mensaje: 'email no es un correo válido' },
+        { campo: 'password', mensaje: 'password es obligatorio' },
+      ]));
+      expect(JSON.stringify(r.detalles)).not.toMatch(/must|should/);
+      // Los mensajes propios se conservan
+      const t = (await api('patch', '/usuarios/me', 'cliente', { telefono: '46137722' }).expect(400)).body;
+      expect(t.message).toBe('Datos inválidos: telefono debe tener 10 dígitos');
+      // Longitudes con su número
+      const largo = (await api('patch', '/usuarios/me', 'cliente', { nombre: 'x'.repeat(81) }).expect(400)).body;
+      expect(largo.detalles[0].mensaje).toBe('nombre debe tener como máximo 80 caracteres');
+    });
+
+    it('todos los motivos aceptan hasta 500 caracteres', async () => {
+      const motivo = 'm'.repeat(450);
+      await api('post', `/soporte/usuarios/${id.cliente}/banear`, 'soporte', { motivo }).expect(200);
+      await api('post', `/soporte/usuarios/${id.cliente}/desbanear`, 'soporte').expect(200);
+      await api('post', `/admin/usuarios/${id.cliente}/ajuste`, 'admin', { monto: 1, motivo }).expect(201);
+      await api('post', `/admin/usuarios/${id.cliente}/ajuste`, 'admin', { monto: -1, motivo: 'm'.repeat(501) }).expect(400);
+    });
+  });
 });

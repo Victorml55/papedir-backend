@@ -15,7 +15,7 @@ export class CancelarSoporteDto extends MotivoCancelacionDto {
 /** Reembolso parcial o total a la cartera del cliente, por ejemplo si faltó un producto. */
 export class ReembolsoCarteraDto {
   @IsNumber({ maxDecimalPlaces: 2 }) @Min(1) @Max(100000) monto: number;
-  @IsString() @IsNotEmpty() @MaxLength(300) motivo: string;
+  @IsString() @IsNotEmpty() @MaxLength(500) motivo: string;
 }
 
 export class RechazarCuentaDto {

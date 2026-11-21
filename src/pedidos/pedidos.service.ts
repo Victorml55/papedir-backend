@@ -4,7 +4,7 @@ import { randomInt, randomUUID } from 'crypto';
 import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { pagina } from '../common/dtos';
 import { AppError, conflicto, invalido, noEncontrado, sinPermiso } from '../common/errores';
-import { coords, folio, redondear } from '../common/util';
+import { coords, fechaLegible, folio, redondear } from '../common/util';
 import { ESTADOS_FINALES, EstadoPedido, REGLAS } from '../config/reglas';
 import { ListaMotivos, motivosActivos } from '../config/catalogos';
 import { CuponesService } from '../cupones/cupones.service';
@@ -315,7 +315,7 @@ export class PedidosService {
     ]);
     await m.insert(EventoPedido, {
       pedidoId: p.id, tipo: 'creado', usuarioId: cliente.id, rol: cliente.rol,
-      detalle: programado ? `Programado para ${c.programadoPara.toISOString()}` : null,
+      detalle: programado ? `Programado para ${fechaLegible(c.programadoPara)}` : null,
     });
     return m.findOneByOrFail(Pedido, { id: p.id });
   }

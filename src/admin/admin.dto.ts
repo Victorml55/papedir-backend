@@ -43,13 +43,13 @@ export class CrearTiendaAdminDto {
 export class EditarTiendaAdminDto extends TiendaUpdateDto {}
 
 export class EliminarTiendaDto {
-  @IsString() @IsNotEmpty() @MaxLength(300) motivo: string;
+  @IsString() @IsNotEmpty() @MaxLength(500) motivo: string;
 }
 
 export class PausaTiendaDto {
   /** Minutos de pausa; 0 quita la pausa. Máximo 3 días. */
   @Type(() => Number) @IsInt() @Min(0) @Max(4320) minutos: number;
-  @IsString() @IsNotEmpty() @MaxLength(300) motivo: string;
+  @IsString() @IsNotEmpty() @MaxLength(500) motivo: string;
 }
 
 export class ListaRepartidoresDto extends PaginaDto {
@@ -69,7 +69,7 @@ export class ListaResenasDto extends PaginaDto {
 
 export class ModerarResenaDto {
   @IsBoolean() oculta: boolean;
-  @ValidateIf((o) => o.oculta) @IsString() @IsNotEmpty() @MaxLength(300) motivo?: string;
+  @ValidateIf((o) => o.oculta) @IsString() @IsNotEmpty() @MaxLength(500) motivo?: string;
 }
 
 export class EditarUsuarioDto {
@@ -85,7 +85,7 @@ export class PasswordAdminDto {
 }
 
 export class EliminarUsuarioDto {
-  @IsString() @IsNotEmpty() @MaxLength(300) motivo: string;
+  @IsString() @IsNotEmpty() @MaxLength(500) motivo: string;
 }
 
 export const TEMAS = ['novedades', 'promociones', 'tiendas', 'repartidores'] as const;
