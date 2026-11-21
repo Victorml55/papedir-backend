@@ -11,7 +11,7 @@ export type Recargos = {
   lluvia: { activo: boolean; monto: number };
   demanda: { activo: boolean; pedidosEsperando: number; monto: number };
 };
-export type Cartera = { limiteDeudaTienda: number; limiteDeudaRepartidor: number; limiteDeudaCliente: number; cargoCancelacion: number };
+export type Cartera = { limiteDeudaTienda: number; limiteDeudaRepartidor: number; limiteDeudaCliente: number; cargoCancelacion: number; ajusteMaxSoporte: number; creditoDisculpa: number };
 type Valores = { comisiones: Comisiones; recargos: Recargos; cartera: Cartera; catalogos: Catalogos };
 
 const DEFAULTS: Valores = {

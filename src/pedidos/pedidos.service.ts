@@ -49,6 +49,8 @@ export interface Transicion {
 
 /** Estados en que el cliente que cancela un pedido en efectivo paga la tarifa de cancelación. */
 const ESTADOS_CON_CARGO: EstadoPedido[] = ['aceptado_tienda', 'listo_para_recoger'];
+/** Estados en que el repartidor ya trae el pedido (y en efectivo ya le pagó a la tienda). */
+export const CON_PEDIDO_EN_MANO: EstadoPedido[] = ['en_camino', 'en_domicilio'];
 
 /** Texto de la notificación push al cliente según el nuevo estado. */
 const AVISO_CLIENTE: Partial<Record<EstadoPedido, string>> = {
@@ -678,6 +680,7 @@ export class PedidosService {
    */
   async transicionar(id: string, t: Transicion): Promise<Pedido> {
     let repartidorAnterior: string | null = null;
+    let compensado: { repartidorId: string; monto: number } | null = null;
     const pedido = await this.ds.transaction(async (m) => {
       const p = await m.findOne(Pedido, { where: { id }, lock: { mode: 'pessimistic_write' } });
       if (!p) throw noEncontrado('Pedido no encontrado');
@@ -696,6 +699,7 @@ export class PedidosService {
         );
       }
       const viajeId = p.viajeId;
+      const estadoPrevio = p.estado;
       repartidorAnterior = p.repartidorId;
       Object.assign(p, t.cambios?.(p) ?? {}, { estado: t.hacia });
       await m.save(p);
@@ -706,6 +710,20 @@ export class PedidosService {
       if (t.hacia === 'entregado') await this.finanzas.registrarEntrega(m, p);
       if (t.hacia === 'cancelado' || t.hacia === 'rechazado') {
         await this.finanzas.devolverSaldo(m, p);
+        // Si ya llevaba el pedido, el repartidor no pierde: se le abona su envío y, en efectivo, lo que
+        // pagó a la tienda por los productos. Lo pone PaPedir; al resolver la cancelación se le cobra a quien tuvo la culpa.
+        if (repartidorAnterior && CON_PEDIDO_EN_MANO.includes(estadoPrevio)) {
+          const monto = redondear(p.costoEnvio + (p.metodoPago === 'efectivo' ? p.montoTienda : 0));
+          const f = folio('R', p.folioNum);
+          await this.finanzas.abonar(m, [{
+            usuarioId: repartidorAnterior, pedidoId: p.id, tipo: 'compensacion_repartidor', monto,
+            descripcion: p.metodoPago === 'efectivo'
+              ? `Pedido ${f} cancelado en camino: productos que pagaste a la tienda y tu envío`
+              : `Pedido ${f} cancelado en camino: tu envío`,
+          }]);
+          await m.insert(EventoPedido, { pedidoId: p.id, tipo: 'repartidor_compensado', usuarioId: null, rol: null, detalle: `$${monto} a la cartera del repartidor` });
+          compensado = { repartidorId: repartidorAnterior, monto };
+        }
         // Reembolso a la cartera en vez de a la tarjeta (lo decide soporte).
         if (t.reembolsoA === 'cartera' && p.pagoEstado === 'pagado' && p.clienteId) {
           await this.finanzas.abonar(m, [{ usuarioId: p.clienteId, pedidoId: p.id, tipo: 'reembolso', monto: p.total, descripcion: `Reembolso del pedido ${folio('R', p.folioNum)}` }]);
@@ -718,7 +736,33 @@ export class PedidosService {
     });
     if ((t.hacia === 'cancelado' || t.hacia === 'rechazado') && pedido.pagoEstado === 'pagado') await this.reembolsar(pedido);
     void this.notificar(pedido, repartidorAnterior, t.sinPush);
+    if (compensado) {
+      const c = compensado as { repartidorId: string; monto: number };
+      void this.push.aUsuarios([c.repartidorId], 'Pedido cancelado: no pierdes', `Te abonamos $${c.monto} en tu cartera por ${folio('R', pedido.folioNum)}`, { pedidoId: pedido.id });
+    }
     return pedido;
+  }
+
+  /**
+   * Reembolso que falló en Stripe: se reintenta a la tarjeta o se manda a la cartera del cliente.
+   * Solo para pedidos cancelados o rechazados con pagoEstado reembolso_fallido.
+   */
+  async reintentarReembolso(agente: Usuario, id: string, destino: 'tarjeta' | 'cartera') {
+    const p = await this.pedidos.findOneBy({ id });
+    if (!p) throw noEncontrado('Pedido no encontrado');
+    if (p.pagoEstado !== 'reembolso_fallido') throw conflicto('SIN_REEMBOLSO_PENDIENTE', 'Este pedido no tiene un reembolso pendiente');
+    if (destino === 'tarjeta') {
+      await this.reembolsar(p);
+    } else {
+      if (!p.clienteId) throw conflicto('SIN_CLIENTE', 'El pedido no tiene cliente con cartera');
+      await this.ds.transaction(async (m) => {
+        await this.finanzas.abonar(m, [{ usuarioId: p.clienteId, pedidoId: p.id, tipo: 'reembolso', monto: p.total, descripcion: `Reembolso del pedido ${folio('R', p.folioNum)}` }]);
+        await m.update(Pedido, p.id, { pagoEstado: 'reembolsado' });
+        await m.insert(EventoPedido, { pedidoId: p.id, tipo: 'reembolsado', usuarioId: agente.id, rol: agente.rol, detalle: `$${p.total} a la cartera del cliente` });
+      });
+      void this.push.aUsuarios([p.clienteId], 'Reembolso en tu cartera', `$${p.total} del pedido ${folio('R', p.folioNum)}`, { pedidoId: p.id });
+    }
+    return this.vista(await this.pedidos.findOneByOrFail({ id }), agente);
   }
 
   /** Un pedido pagado con tarjeta que se cancela o rechaza se reembolsa completo. Si Stripe falla, avisa a soporte. */

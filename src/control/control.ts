@@ -10,7 +10,7 @@ import { DataSource } from 'typeorm';
 import { AuthModule } from '../auth/auth.module';
 import { Actor, Publico, Roles } from '../common/auth';
 import { pagina, PaginaDto } from '../common/dtos';
-import { conflicto, invalido, noEncontrado } from '../common/errores';
+import { AppError, conflicto, invalido, noEncontrado } from '../common/errores';
 import { redondear, UuidPipe } from '../common/util';
 import { aplicarCatalogo, CATALOGO, CATALOGO_BASE, Catalogos } from '../config/catalogos';
 import { ESTADOS_FINALES, EstadoPedido, REGLAS } from '../config/reglas';
@@ -327,11 +327,20 @@ export class ControlService implements OnModuleInit {
     const u = await this.usuario(usuarioId);
     if (u.rol === 'soporte' || u.rol === 'admin') throw invalido('Las cuentas internas no tienen cartera', 'id');
     if (!redondear(dto.monto)) throw invalido('El monto no puede ser cero', 'monto');
+    await this.validarTopeSoporte(agente, [dto.monto]);
     await this.ds.transaction((m) =>
       this.finanzas.abonar(m, [{ usuarioId: u.id, tipo: 'ajuste', monto: dto.monto, descripcion: `Ajuste de ${agente.nombre}: ${dto.motivo.trim()}` }]),
     );
     void this.push.aUsuarios([u.id], dto.monto > 0 ? 'Abono en tu cartera' : 'Cargo en tu cartera', `${dto.monto > 0 ? '+' : '−'}$${Math.abs(dto.monto)}: ${dto.motivo}`);
     return this.finanzas.estadoDeCuenta(u.id, u.rol, { page: 1, limit: 10 } as PaginaDto);
+  }
+
+  /** Soporte puede abonar o cargar a mano hasta el tope de Ajustes por movimiento; admin no tiene tope. */
+  async validarTopeSoporte(agente: Usuario, montos: number[]) {
+    if (agente.rol === 'admin') return;
+    const tope = (await this.config.get('cartera')).ajusteMaxSoporte ?? REGLAS.cartera.ajusteMaxSoporte;
+    const mayor = Math.max(0, ...montos.map((x) => Math.abs(x)));
+    if (mayor > tope) throw new AppError(403, 'TOPE_SOPORTE', `Soporte puede mover hasta $${tope} por movimiento; pídele a un admin los montos mayores`);
   }
 
   /** Deshace una liquidación mal capturada con el movimiento contrario; la liquidación queda marcada como anulada. */
@@ -484,6 +493,9 @@ export class ControlSoporteController {
   avanzar(@Actor() u: Usuario, @Param('id', UuidPipe) id: string, @Body() dto: MotivoDto) { return this.svc.avanzar(u, id, dto.motivo); }
 
   // Tickets
+  @Post('usuarios/:id/ajuste')
+  ajuste(@Actor() u: Usuario, @Param('id', UuidPipe) id: string, @Body() dto: AjusteDto) { return this.svc.ajuste(u, id, dto); }
+
   @Post('tickets')
   crearTicket(@Body() dto: TicketAdminDto) { return this.svc.crearTicket(dto); }
 
@@ -563,6 +575,7 @@ export class CatalogosController {
   imports: [AuthModule, DireccionesModule, DocumentosModule, PedidosModule, RepartidorModule, TicketsModule, TiendasModule],
   controllers: [ControlSoporteController, ControlAdminController, CatalogosController],
   providers: [ControlService],
+  exports: [ControlService],
 })
 export class ControlModule {}
 

@@ -30,6 +30,8 @@ export const REGLAS = {
     limiteDeudaRepartidor: 500, // con más deuda no puede conectarse ni tomar pedidos
     limiteDeudaCliente: 150, // con más deuda solo puede pagar con tarjeta
     cargoCancelacion: 25, // al cliente que cancela en efectivo cuando la tienda ya aceptó; se le abona a la tienda
+    ajusteMaxSoporte: 500, // tope por movimiento que soporte puede abonar o cargar a mano (admin no tiene tope)
+    creditoDisculpa: 30, // crédito que se sugiere al cliente cuando la cancelación no fue su culpa
   },
   comisiones: {
     tiendaPct: 10, // % sobre lo que la tienda cobra por productos

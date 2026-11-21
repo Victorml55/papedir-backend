@@ -17,6 +17,7 @@ import { BuscarPedidosDto, BuscarUsuariosDto, CancelarSoporteDto, CorregirUbicac
 import { FinanzasService } from '../finanzas/finanzas.service';
 import { folio, redondear } from '../common/util';
 import { EventoPedido } from '../database/entities';
+import { cancelacionesAtribuidas } from '../resoluciones/resoluciones';
 
 const NO_FINALES: EstadoPedido[] = ['programado', 'creado', 'aceptado_tienda', 'listo_para_recoger', 'asignado', 'en_tienda', 'en_camino', 'en_domicilio'];
 
@@ -179,6 +180,7 @@ export class SoporteService {
       documentosCompletos: u.rol === 'repartidor' || u.rol === 'tienda' ? await this.documentos.completos(u) : null,
       // Repartidor: si está conectado ahora (soporte lo puede desconectar).
       disponible: u.rol === 'repartidor' ? u.disponible : null,
+      cancelacionesAtribuidas: await cancelacionesAtribuidas(this.ds, u),
     };
   }
 

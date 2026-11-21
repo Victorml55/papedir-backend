@@ -33,6 +33,8 @@ export class CarteraConfigDto {
   @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) @Max(100000) limiteDeudaRepartidor: number;
   @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) @Max(100000) limiteDeudaCliente: number;
   @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) @Max(1000) cargoCancelacion: number;
+  @IsOptional() @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) @Max(100000) ajusteMaxSoporte?: number;
+  @IsOptional() @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) @Max(1000) creditoDisculpa?: number;
 }
 
 export class ComisionTiendaDto {

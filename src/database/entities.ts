@@ -474,7 +474,7 @@ export class Movimiento {
 export type TipoMovimiento =
   | 'comision_tienda' | 'comision_envio' | 'descuento_plataforma' | 'liquidacion' | 'venta_tarjeta' | 'envio_tarjeta'
   | 'pago_con_saldo' | 'reverso_saldo' | 'saldo_cliente' | 'pago_deuda' | 'deuda_cobrada' | 'reembolso'
-  | 'cargo_cancelacion' | 'compensacion_cancelacion' | 'ajuste';
+  | 'cargo_cancelacion' | 'compensacion_cancelacion' | 'ajuste' | 'compensacion_repartidor' | 'resolucion';
 
 /** Una tienda (sucursal) que un dueño ya aprobado pide desde la app; soporte o admin la revisan. */
 @Entity('solicitudes_tienda')
@@ -519,7 +519,20 @@ export class Mensaje {
   @CreateDateColumn(fecha) creadoEn: Date;
 }
 
+/** Cómo se cerró un pedido cancelado: de quién fue la culpa, qué se compensó y el acuerdo con las personas. */
+@Entity('resoluciones')
+export class Resolucion {
+  @PrimaryColumn('uuid') pedidoId: string;
+  @Column({ type: 'text' }) culpable: 'cliente' | 'tienda' | 'repartidor' | 'plataforma';
+  @Column({ type: 'text' }) nota: string;
+  @Column({ type: 'text', nullable: true }) acuerdo: string | null;
+  @Column({ type: 'jsonb', default: () => "'[]'" }) acciones: { usuarioId: string; rol: string; nombre: string; monto: number; concepto: string }[];
+  @Column('uuid') resueltoPor: string;
+  @CreateDateColumn(fecha) creadoEn: Date;
+}
+
 export const ENTIDADES = [
   Usuario, CodigoVerificacion, EventoCuenta, RefreshToken, Dispositivo, Direccion, Tienda, CategoriaProducto, Producto, Viaje, Pedido, PedidoItem,
   EventoPedido, Calificacion, Ticket, Mensaje, Vehiculo, Documento, HorarioTienda, GrupoOpciones, Opcion, Favorito, Cupon,
-  Notificacion, MensajePedido, Zona, Configuracion, Liquidacion, Movimiento, Suscripcion, AccionInterna, SolicitudTienda, EnvioPush];
+  Notificacion, MensajePedido, Zona, Configuracion, Liquidacion, Movimiento, Suscripcion, AccionInterna, SolicitudTienda, EnvioPush, Resolucion];
+
