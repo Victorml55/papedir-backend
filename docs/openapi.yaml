@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: PaPedir API
-  version: 1.10.0
+  version: 1.10.1
   description: |
     Contrato de la API de PaPedir, plataforma de reparto a domicilio en Celaya, Gto.
 
@@ -2461,7 +2461,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { type: object, required: [motivo], properties: { notas: { type: string, nullable: true }, destinoNombre: { type: string }, destinoTelefono: { type: string, pattern: '^[0-9]{10}$' }, destinoReferencias: { type: string, nullable: true }, propina: { type: number, minimum: 0, maximum: 1000, description: Solo efectivo y sin terminar; ajusta el total }, motivo: { type: string } } }
+            schema: { type: object, required: [motivo], properties: { notas: { type: string, maxLength: 300, nullable: true }, destinoNombre: { type: string }, destinoTelefono: { type: string, pattern: '^[0-9]{10}$' }, destinoReferencias: { type: string, nullable: true }, propina: { type: number, minimum: 0, maximum: 500, description: Solo efectivo y sin terminar; ajusta el total }, motivo: { type: string, maxLength: 500 } } }
       responses:
         '200':
           description: OK
@@ -2517,7 +2517,7 @@ paths:
               required: [monto, motivo]
               properties:
                 monto: { type: number, minimum: 1, example: 45 }
-                motivo: { type: string, maxLength: 300, example: Faltó una bebida }
+                motivo: { type: string, maxLength: 500, example: Faltó una bebida }
       responses:
         '200':
           description: OK
@@ -3098,7 +3098,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { type: object, required: [monto, motivo], properties: { monto: { type: number, description: '+ abona, − carga', example: 50 }, motivo: { type: string, maxLength: 300 } } }
+            schema: { type: object, required: [monto, motivo], properties: { monto: { type: number, description: '+ abona, − carga', example: 50 }, motivo: { type: string, maxLength: 500 } } }
       responses:
         '201':
           description: OK
@@ -3288,7 +3288,7 @@ paths:
               required: [aprobado]
               properties:
                 aprobado: { type: boolean }
-                motivo: { type: string, maxLength: 300, example: La foto está borrosa }
+                motivo: { type: string, maxLength: 500, example: La foto está borrosa }
       responses:
         '200':
           description: Revisado
@@ -3642,7 +3642,7 @@ paths:
               type: object
               required: [motivo]
               properties:
-                motivo: { type: string, maxLength: 300 }
+                motivo: { type: string, maxLength: 500 }
       responses:
         '204': { description: Dada de baja }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -3947,7 +3947,7 @@ paths:
               required: [minutos, motivo]
               properties:
                 minutos: { type: integer, minimum: 0, maximum: 4320, example: 60 }
-                motivo: { type: string, maxLength: 300, example: Varias quejas por pedidos incompletos }
+                motivo: { type: string, maxLength: 500, example: Varias quejas por pedidos incompletos }
       responses:
         '200':
           description: La ficha actualizada
@@ -4035,7 +4035,7 @@ paths:
               required: [oculta]
               properties:
                 oculta: { type: boolean }
-                motivo: { type: string, maxLength: 300, description: Obligatorio al ocultar, example: Lenguaje ofensivo }
+                motivo: { type: string, maxLength: 500, description: Obligatorio al ocultar, example: Lenguaje ofensivo }
       responses:
         '200':
           description: OK
@@ -4083,7 +4083,7 @@ paths:
               type: object
               required: [motivo]
               properties:
-                motivo: { type: string, maxLength: 300 }
+                motivo: { type: string, maxLength: 500 }
       responses:
         '204': { description: Eliminada }
         '409': { description: '`TIENE_PEDIDOS_ACTIVOS`, `ULTIMO_ADMIN` o `CUENTA_ELIMINADA`' }
