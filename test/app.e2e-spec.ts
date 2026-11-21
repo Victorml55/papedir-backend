@@ -1940,4 +1940,81 @@ describe('PaPedir API', () => {
       await api('post', `/admin/usuarios/${id.cliente}/ajuste`, 'admin', { monto: -1, motivo: 'm'.repeat(501) }).expect(400);
     });
   });
+  describe('Resolver cancelaciones', () => {
+    const saldo = async (quien: string) => (await api('get', '/cartera', quien).expect(200)).body.saldo;
+    const enCamino = async () => {
+      const carrito = { clienteId: id.clientePanel, tiendaId: id.tiendaId, direccionId: id.dirPanel, items: [{ productoId: id.pastor, cantidad: 1, opciones: [id.verde] }] };
+      const p = (await api('post', '/soporte/pedidos', 'soporte', carrito).expect(201)).body;
+      await api('post', `/soporte/pedidos/${p.id}/avanzar`, 'soporte', { motivo: 'Aceptado' }).expect(200);
+      await api('post', `/soporte/pedidos/${p.id}/avanzar`, 'soporte', { motivo: 'Listo' }).expect(200);
+      await api('patch', '/repartidor/disponibilidad', 'repPanel', { disponible: true }).expect(200);
+      await api('post', `/soporte/pedidos/${p.id}/asignar`, 'soporte', { repartidorId: id.repPanel, motivo: 'Cerca' }).expect(200);
+      await api('post', `/soporte/pedidos/${p.id}/avanzar`, 'soporte', { motivo: 'En tienda' }).expect(200);
+      expect((await api('post', `/soporte/pedidos/${p.id}/avanzar`, 'soporte', { motivo: 'Salió' }).expect(200)).body.estado).toBe('en_camino');
+      return p;
+    };
+
+    it('si se cancela cuando el repartidor ya lo llevaba, se le compensa solo', async () => {
+      const antes = await saldo('repPanel');
+      const p = await enCamino();
+      await api('post', `/soporte/pedidos/${p.id}/cancelar`, 'soporte', { motivo: 'No se localizó al cliente' }).expect(200);
+      // efectivo: lo que pagó a la tienda por los productos + su envío
+      const esperado = Math.round((p.montoAPagarTienda + p.costoEnvio) * 100) / 100;
+      expect(await saldo('repPanel')).toBeCloseTo(antes + esperado, 2);
+      const eventos = (await api('get', `/pedidos/${p.id}/eventos`, 'soporte')).body.map((x) => x.tipo);
+      expect(eventos).toContain('repartidor_compensado');
+      id.cancelado = p.id;
+      id.compensacion = esperado as any;
+    });
+
+    it('sugiere compensaciones según la culpa y se resuelve una sola vez', async () => {
+      const r = (await api('get', `/soporte/pedidos/${id.cancelado}/resolucion`, 'soporte').expect(200)).body;
+      expect(r.resolucion).toBeNull();
+      expect(r.compensacionRepartidor).toBe(id.compensacion);
+      expect(r.participantes.map((x) => x.rol)).toEqual(['cliente', 'tienda', 'repartidor']);
+      // culpa del cliente: se le carga lo que se le pagó al repartidor
+      expect(r.sugerencias.cliente).toEqual([expect.objectContaining({ rol: 'cliente', monto: -id.compensacion })]);
+      // culpa del repartidor: se revierte su compensación y el cliente recibe disculpa
+      expect(r.sugerencias.repartidor.map((x) => [x.rol, x.monto])).toEqual([['cliente', 30], ['repartidor', -id.compensacion]]);
+
+      const clienteAntes = await saldo('clientePanel');
+      const rep = r.participantes.find((x) => x.rol === 'repartidor');
+      const body = {
+        culpable: 'cliente', nota: 'No contestó en 10 minutos', acuerdo: 'Aceptó pagar la mitad',
+        acciones: [{ usuarioId: id.clientePanel, monto: -Math.round(id.compensacion / 2), concepto: 'Mitad del pedido que no recibió' }],
+      };
+      // solo participantes del pedido
+      await api('post', `/soporte/pedidos/${id.cancelado}/resolucion`, 'soporte', { ...body, acciones: [{ usuarioId: id.soporte, monto: 10, concepto: 'x' }] }).expect(400);
+      const hecho = (await api('post', `/soporte/pedidos/${id.cancelado}/resolucion`, 'soporte', body).expect(200)).body;
+      expect(hecho.resolucion).toMatchObject({ culpable: 'cliente', acuerdo: 'Aceptó pagar la mitad', acciones: [expect.objectContaining({ rol: 'cliente' })] });
+      expect(await saldo('clientePanel')).toBeCloseTo(clienteAntes - Math.round(id.compensacion / 2), 2);
+      expect(rep).toBeTruthy();
+      expect((await api('post', `/soporte/pedidos/${id.cancelado}/resolucion`, 'soporte', body).expect(409)).body.error).toBe('YA_RESUELTO');
+      const ficha = (await api('get', `/soporte/usuarios/${id.clientePanel}`, 'soporte').expect(200)).body;
+      expect(ficha.cancelacionesAtribuidas).toEqual({ total: 1, ultimos30: 1 });
+      const eventos = (await api('get', `/pedidos/${id.cancelado}/eventos`, 'soporte')).body.map((x) => x.tipo);
+      expect(eventos).toContain('cancelacion_resuelta');
+    });
+
+    it('soporte ajusta carteras hasta su tope; admin sin tope', async () => {
+      await api('post', `/soporte/usuarios/${id.clientePanel}/ajuste`, 'soporte', { monto: 50, motivo: 'Compensación' }).expect(201);
+      expect((await api('post', `/soporte/usuarios/${id.clientePanel}/ajuste`, 'soporte', { monto: -501, motivo: 'Mucho' }).expect(403)).body.error).toBe('TOPE_SOPORTE');
+      await api('post', `/soporte/usuarios/${id.clientePanel}/ajuste`, 'admin', { monto: 900, motivo: 'Admin sin tope' }).expect(201);
+      // el tope de una resolución también aplica
+      const p = await enCamino();
+      await api('post', `/soporte/pedidos/${p.id}/cancelar`, 'soporte', { motivo: 'La tienda cerró' }).expect(200);
+      const grande = { culpable: 'tienda', nota: 'x', acciones: [{ usuarioId: id.clientePanel, monto: 600, concepto: 'Disculpa' }] };
+      expect((await api('post', `/soporte/pedidos/${p.id}/resolucion`, 'soporte', grande).expect(403)).body.error).toBe('TOPE_SOPORTE');
+      await api('post', `/soporte/pedidos/${p.id}/resolucion`, 'admin', grande).expect(200);
+    });
+
+    it('reintentar reembolso solo si falló', async () => {
+      expect((await api('post', `/soporte/pedidos/${id.cancelado}/reembolso/reintentar`, 'soporte', { destino: 'cartera' }).expect(409)).body.error).toBe('SIN_REEMBOLSO_PENDIENTE');
+      await ds.query(`UPDATE pedidos SET pago_estado = 'reembolso_fallido', metodo_pago = 'tarjeta' WHERE id = $1`, [id.cancelado]);
+      const antes = await saldo('clientePanel');
+      const p = (await api('post', `/soporte/pedidos/${id.cancelado}/reembolso/reintentar`, 'soporte', { destino: 'cartera' }).expect(200)).body;
+      expect(p.pagoEstado).toBe('reembolsado');
+      expect(await saldo('clientePanel')).toBeCloseTo(antes + p.total, 2);
+    });
+  });
 });

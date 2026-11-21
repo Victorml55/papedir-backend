@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: PaPedir API
-  version: 1.10.2
+  version: 1.11.0
   description: |
     Contrato de la API de PaPedir, plataforma de reparto a domicilio en Celaya, Gto.
 
@@ -3119,6 +3119,85 @@ paths:
               schema: { $ref: '#/components/schemas/EstadoDeCuenta' }
         '400': { $ref: '#/components/responses/ValidationError' }
 
+  /soporte/usuarios/{id}/ajuste:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: ajusteCarteraSoporte
+      tags: [Finanzas]
+      summary: Abonar o cargar a mano en una cartera (soporte con tope, admin sin tope)
+      description: Soporte puede mover hasta `cartera.ajusteMaxSoporte` por movimiento; si pasa, responde 403 `TOPE_SOPORTE`. Mismo cuerpo que /admin/usuarios/{id}/ajuste.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [monto, motivo], properties: { monto: { type: number, description: '+ abona, − carga', example: 50 }, motivo: { type: string, maxLength: 500 } } }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EstadoDeCuenta' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /soporte/pedidos/{id}/resolucion:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: verResolucion
+      tags: [Soporte]
+      summary: Cómo se cerró una cancelación, o las compensaciones sugeridas según de quién fue la culpa
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResolucionVista' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: resolverCancelacion
+      tags: [Soporte]
+      summary: Resolver una cancelación (una sola vez)
+      description: |
+        Registra de quién fue la culpa, la nota, el acuerdo con las personas (si lo hubo) y aplica cada acción
+        como movimiento `resolucion` en la cartera de quien corresponda (solo participantes del pedido).
+        Soporte tiene el tope `cartera.ajusteMaxSoporte` por acción (403 `TOPE_SOPORTE`). 409 `YA_RESUELTO` si ya se resolvió.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResolucionInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResolucionVista' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: '`YA_RESUELTO` si ya se resolvió; `TRANSICION_INVALIDA` si el pedido no está cancelado ni rechazado' }
+
+  /soporte/pedidos/{id}/reembolso/reintentar:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: reintentarReembolso
+      tags: [Soporte]
+      summary: Reembolso que falló en Stripe; reintentarlo a la tarjeta o mandarlo a la cartera del cliente
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [destino], properties: { destino: { type: string, enum: [tarjeta, cartera] } } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+        '409': { description: '`SIN_REEMBOLSO_PENDIENTE` si el pedido no tiene un reembolso fallido' }
+
   /admin/liquidaciones/{id}/anular:
     parameters:
       - $ref: '#/components/parameters/Id'
@@ -4460,6 +4539,13 @@ components:
               nullable: true
               description: Repartidor y tienda; true si sus documentos requeridos están aprobados
             disponible: { type: boolean, nullable: true, description: 'Repartidor: si está conectado ahora' }
+            cancelacionesAtribuidas:
+              type: object
+              nullable: true
+              description: 'Cliente, tienda o repartidor: cancelaciones resueltas en las que tuvo la culpa'
+              properties:
+                total: { type: integer }
+                ultimos30: { type: integer }
 
     EventoCuenta:
       type: object
@@ -5730,6 +5816,60 @@ components:
         recargos: { $ref: '#/components/schemas/Recargos' }
         cartera: { $ref: '#/components/schemas/CarteraConfig' }
 
+    AccionResolucion:
+      type: object
+      required: [usuarioId, monto, concepto]
+      properties:
+        usuarioId: { type: string, format: uuid }
+        rol: { type: string, enum: [cliente, tienda, repartidor], readOnly: true }
+        nombre: { type: string, readOnly: true }
+        monto: { type: number, description: '+ abona a su cartera, − le carga' }
+        concepto: { type: string, maxLength: 160, example: Crédito de disculpa }
+
+    ResolucionInput:
+      type: object
+      required: [culpable, nota, acciones]
+      properties:
+        culpable: { type: string, enum: [cliente, tienda, repartidor, plataforma] }
+        nota: { type: string, maxLength: 500 }
+        acuerdo: { type: string, maxLength: 1000, description: Lo que se acordó con la persona si ninguna sugerencia convenció }
+        acciones:
+          type: array
+          maxItems: 10
+          items: { $ref: '#/components/schemas/AccionResolucion' }
+
+    ResolucionVista:
+      type: object
+      properties:
+        resolucion:
+          type: object
+          nullable: true
+          properties:
+            culpable: { type: string, enum: [cliente, tienda, repartidor, plataforma] }
+            nota: { type: string }
+            acuerdo: { type: string, nullable: true }
+            acciones: { type: array, items: { $ref: '#/components/schemas/AccionResolucion' } }
+            resueltoPor: { type: object, properties: { id: { type: string, format: uuid }, nombre: { type: string } } }
+            creadoEn: { type: string, format: date-time }
+        compensacionRepartidor: { type: number, description: Lo que se le abonó solo al repartidor al cancelarse con el pedido en mano }
+        participantes:
+          type: array
+          items:
+            type: object
+            properties:
+              usuarioId: { type: string, format: uuid }
+              rol: { type: string, enum: [cliente, tienda, repartidor] }
+              nombre: { type: string }
+        sugerencias:
+          type: object
+          description: Acciones sugeridas para cada posible culpable; soporte las edita o agrega las que acuerde
+          properties:
+            cliente: { type: array, items: { $ref: '#/components/schemas/AccionResolucion' } }
+            tienda: { type: array, items: { $ref: '#/components/schemas/AccionResolucion' } }
+            repartidor: { type: array, items: { $ref: '#/components/schemas/AccionResolucion' } }
+            plataforma: { type: array, items: { $ref: '#/components/schemas/AccionResolucion' } }
+        topeSoporte: { type: number }
+
     CarteraConfig:
       type: object
       required: [limiteDeudaTienda, limiteDeudaRepartidor, limiteDeudaCliente, cargoCancelacion]
@@ -5738,6 +5878,8 @@ components:
         limiteDeudaRepartidor: { type: number, example: 500, description: Con más deuda no puede conectarse ni tomar pedidos }
         limiteDeudaCliente: { type: number, example: 150, description: Con más deuda solo puede pagar con tarjeta }
         cargoCancelacion: { type: number, example: 25, description: Al cliente que cancela en efectivo cuando la tienda ya aceptó; se le abona a la tienda }
+        ajusteMaxSoporte: { type: number, example: 500, description: 'Tope por movimiento que soporte puede abonar o cargar a mano (ajustes y resoluciones). Admin no tiene tope' }
+        creditoDisculpa: { type: number, example: 30, description: Crédito que se sugiere al cliente cuando la cancelación no fue su culpa }
 
     CuponInput:
       type: object
@@ -5782,12 +5924,14 @@ components:
         id: { type: string, format: uuid }
         tipo:
           type: string
-          enum: [comision_tienda, comision_envio, descuento_plataforma, liquidacion, venta_tarjeta, envio_tarjeta, pago_con_saldo, reverso_saldo, saldo_cliente, pago_deuda, deuda_cobrada, reembolso, cargo_cancelacion, compensacion_cancelacion, ajuste]
+          enum: [comision_tienda, comision_envio, descuento_plataforma, liquidacion, venta_tarjeta, envio_tarjeta, pago_con_saldo, reverso_saldo, saldo_cliente, pago_deuda, deuda_cobrada, reembolso, cargo_cancelacion, compensacion_cancelacion, ajuste, compensacion_repartidor, resolucion]
           description: |
             venta_tarjeta / envio_tarjeta: pedido con tarjeta; PaPedir le paga a la tienda su venta y al repartidor su envío y propina.
             pago_con_saldo / pago_deuda: el cliente usó su saldo o pagó su adeudo en un pedido; reverso_saldo lo deshace si no se entregó.
             saldo_cliente / deuda_cobrada: en efectivo el repartidor cobró de menos (saldo del cliente) o de más (adeudo del cliente).
             reembolso: soporte devolvió dinero a la cartera. cargo_cancelacion / compensacion_cancelacion: cancelación tardía en efectivo.
+            compensacion_repartidor: el pedido se canceló cuando el repartidor ya lo llevaba; se le abona su envío y, en efectivo, lo que pagó a la tienda.
+            resolucion: abono o cargo que soporte aplicó al resolver una cancelación (según de quién fue la culpa o lo acordado).
         monto: { type: number, description: '> 0 a tu favor; < 0 lo que debes' }
         descripcion: { type: string, example: Comisión 10% del pedido R-000123 }
         pedidoId: { type: string, format: uuid, nullable: true }

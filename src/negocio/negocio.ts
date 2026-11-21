@@ -96,8 +96,10 @@ export class NegocioService {
     return this.config.guardar('comisiones', { tiendaPct: dto.tiendaPct, envioPct: dto.envioPct }, admin.id);
   }
 
-  guardarCartera(admin: Usuario, dto: CarteraConfigDto) {
-    return this.config.guardar('cartera', { ...dto }, admin.id);
+  async guardarCartera(admin: Usuario, dto: CarteraConfigDto) {
+    // Los campos que no manda (versiones anteriores del panel) conservan su valor actual.
+    const actual = await this.config.get('cartera');
+    return this.config.guardar('cartera', { ...actual, ...dto }, admin.id);
   }
 
   guardarRecargos(admin: Usuario, dto: RecargosDto) {
