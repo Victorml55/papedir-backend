@@ -42,7 +42,12 @@ export interface Transicion {
   ubicacion?: { lat: number; lng: number };
   /** true = solo evento de tiempo real, sin push (correcciones que no cambian el estado). */
   sinPush?: boolean;
+  /** Al cancelar un pedido pagado con tarjeta: devolverlo a la tarjeta (por omisión) o a la cartera del cliente. */
+  reembolsoA?: 'tarjeta' | 'cartera';
 }
+
+/** Estados en que el cliente que cancela un pedido en efectivo paga la tarifa de cancelación. */
+const ESTADOS_CON_CARGO: EstadoPedido[] = ['aceptado_tienda', 'listo_para_recoger'];
 
 /** Texto de la notificación push al cliente según el nuevo estado. */
 const AVISO_CLIENTE: Partial<Record<EstadoPedido, string>> = {
@@ -90,8 +95,12 @@ export class PedidosService {
     return h;
   }
 
-  /** Valida el carrito con los precios vigentes y calcula subtotal, envío, cupón, propina y total. */
-  private async preparar(cliente: Usuario, dto: CotizarPedidoDto) {
+  /**
+   * Valida el carrito con los precios vigentes y calcula subtotal, envío, cupón, propina y total.
+   * La cartera del cliente se aplica sola: su saldo a favor descuenta del total y su adeudo se suma.
+   * En pedidos de varias tiendas se pasa `cartera` para no usar el mismo saldo dos veces.
+   */
+  private async preparar(cliente: Usuario, dto: CotizarPedidoDto, cartera?: { saldo: number }) {
     const tienda = await this.tiendas.findOneBy({ id: dto.tiendaId });
     if (!tienda) throw noEncontrado('Tienda no encontrada');
     const dueno = await this.usuarios.findOneBy({ id: tienda.ownerId });
@@ -117,11 +126,27 @@ export class PedidosService {
     const cupon = dto.cupon?.trim() ? await this.cupones.aplicar(dto.cupon, cliente.id, tienda, subtotal, costoEnvio) : null;
     const descuento = cupon?.descuento ?? 0;
     const propina = redondear(dto.propina ?? 0);
-    const total = redondear(subtotal + costoEnvio + propina - descuento);
+    const antesDeCartera = redondear(subtotal + costoEnvio + propina - descuento);
     const metodoPago = dto.metodoPago ?? 'efectivo';
+
+    const estado = cartera ?? { saldo: await this.finanzas.saldo(cliente.id) };
+    const saldoAplicado = estado.saldo > 0 ? redondear(Math.min(estado.saldo, antesDeCartera)) : 0;
+    const deudaCobrada = estado.saldo < 0 ? redondear(-estado.saldo) : 0;
+    estado.saldo = redondear(estado.saldo - saldoAplicado + deudaCobrada);
+    const total = redondear(antesDeCartera - saldoAplicado + deudaCobrada);
+    if (deudaCobrada && metodoPago === 'efectivo') {
+      const limite = (await this.finanzas.limiteDeuda('cliente')) ?? Infinity;
+      if (deudaCobrada > limite) throw conflicto('DEUDA_EXCEDIDA', `Tienes un adeudo de $${deudaCobrada} con PaPedir; paga este pedido con tarjeta para saldarlo`);
+    }
+    if (metodoPago === 'tarjeta' && total < REGLAS.pagos.minimoTarjeta) {
+      throw invalido(saldoAplicado ? 'Tu saldo a favor cubre casi todo el pedido; elige pagar en efectivo' : `El mínimo para pagar con tarjeta es $${REGLAS.pagos.minimoTarjeta}`, 'metodoPago');
+    }
     this.validarMaximo(total, metodoPago);
     const montoTienda = redondear(subtotal - (cupon?.absorbe === 'tienda' ? descuento : 0));
-    return { tienda, direccion, lineas, subtotal, costoEnvio, recargos, cupon, descuento, propina, total, montoTienda, distanciaKm, programadoPara, metodoPago };
+    return {
+      tienda, direccion, lineas, subtotal, costoEnvio, recargos, cupon, descuento, propina, total, montoTienda, distanciaKm, programadoPara, metodoPago,
+      saldoAplicado, deudaCobrada,
+    };
   }
 
   /**
@@ -186,7 +211,7 @@ export class PedidosService {
   private cotizacion(
     c: {
       distanciaKm: number; subtotal: number; costoEnvio: number; total: number; recargos: Recargo[]; descuento?: number; propina?: number;
-      cupon?: any; programadoPara?: Date | null; metodoPago?: 'efectivo' | 'tarjeta';
+      cupon?: any; programadoPara?: Date | null; metodoPago?: 'efectivo' | 'tarjeta'; saldoAplicado?: number; deudaCobrada?: number;
     },
     preparacionMin: number,
   ) {
@@ -198,6 +223,9 @@ export class PedidosService {
       descuento: c.descuento ?? 0,
       cupon: c.cupon ? { codigo: c.cupon.cupon.codigo, descripcion: c.cupon.cupon.descripcion } : null,
       propina: c.propina ?? 0,
+      // Cartera: saldo a favor que se descontó y adeudo anterior que se sumó al total.
+      saldoAplicado: c.saldoAplicado ?? 0,
+      deudaCobrada: c.deudaCobrada ?? 0,
       total: c.total,
       metodoPago: c.metodoPago ?? 'efectivo',
       programadoPara: c.programadoPara ?? null,
@@ -218,6 +246,14 @@ export class PedidosService {
     if (c.cupon) {
       const otra = await this.cupones.aplicar(c.cupon.cupon.codigo, cliente.id, c.tienda, c.subtotal, c.costoEnvio, m);
       if (otra.descuento !== c.descuento) throw conflicto('CUPON_INVALIDO', 'El cupón cambió; vuelve a cotizar');
+    }
+    // La cartera se reserva al crear el pedido; un candado por cliente evita usar el mismo saldo en dos pedidos a la vez.
+    if (c.saldoAplicado > 0 || c.deudaCobrada > 0) {
+      await m.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [cliente.id]);
+      const actual = await this.finanzas.saldo(cliente.id, m);
+      if ((c.saldoAplicado > 0 && actual < c.saldoAplicado) || (c.deudaCobrada > 0 && redondear(-actual) !== c.deudaCobrada)) {
+        throw conflicto('SALDO_CAMBIO', 'Tu saldo cambió; vuelve a cotizar');
+      }
     }
     const programado = !!c.programadoPara;
     const p = await m.save(
@@ -240,6 +276,8 @@ export class PedidosService {
         cuponId: c.cupon?.cupon.id ?? null,
         descuentoAbsorbe: c.cupon?.absorbe ?? null,
         montoTienda: c.montoTienda,
+        saldoAplicado: c.saldoAplicado,
+        deudaCobrada: c.deudaCobrada,
         total: c.total,
         distanciaKm: c.distanciaKm,
         codigoEntrega: String(randomInt(0, 10000)).padStart(4, '0'),
@@ -269,6 +307,11 @@ export class PedidosService {
         throw conflicto('PRODUCTO_AGOTADO', `Ya no quedan suficientes ${prod.nombre}`);
       }
     }
+    const f = folio('R', p.folioNum);
+    await this.finanzas.abonar(m, [
+      { usuarioId: cliente.id, pedidoId: p.id, tipo: 'pago_con_saldo', monto: -c.saldoAplicado, descripcion: `Saldo usado en el pedido ${f}` },
+      { usuarioId: cliente.id, pedidoId: p.id, tipo: 'pago_deuda', monto: c.deudaCobrada, descripcion: `Adeudo cobrado en el pedido ${f}` },
+    ]);
     await m.insert(EventoPedido, {
       pedidoId: p.id, tipo: 'creado', usuarioId: cliente.id, rol: cliente.rol,
       detalle: programado ? `Programado para ${c.programadoPara.toISOString()}` : null,
@@ -347,8 +390,9 @@ export class PedidosService {
     const ids = dto.pedidos.map((x) => x.tiendaId);
     if (new Set(ids).size !== ids.length) throw invalido('Cada tienda va una sola vez en el carrito', 'pedidos');
     const preparados = [];
+    const cartera = { saldo: await this.finanzas.saldo(cliente.id) }; // el saldo se reparte entre las tiendas, en orden
     for (const x of dto.pedidos) {
-      preparados.push(await this.preparar(cliente, { ...x, direccionId: dto.direccionId, programadoPara: dto.programadoPara }));
+      preparados.push(await this.preparar(cliente, { ...x, direccionId: dto.direccionId, programadoPara: dto.programadoPara }, cartera));
     }
     const grupoId = randomUUID();
     const pedidos = await this.ds.transaction(async (m) => {
@@ -490,6 +534,7 @@ export class PedidosService {
     if (!lista.length) return [];
     const ids = lista.map((p) => p.id);
     const idsRep = [...new Set(lista.map((p) => p.repartidorId).filter(Boolean))];
+    const cargoCancelacion = visor.rol === 'cliente' ? await this.finanzas.cargoCancelacion() : 0;
     const [tiendas, items, reps, califs, vehiculos] = await Promise.all([
       this.tiendas.findBy({ id: In([...new Set(lista.map((p) => p.tiendaId))]) }),
       this.items.find({ where: { pedidoId: In(ids) } }),
@@ -534,6 +579,8 @@ export class PedidosService {
         recargos: p.recargos ?? [],
         propina: p.propina,
         descuento: p.descuento,
+        saldoAplicado: p.saldoAplicado,
+        deudaCobrada: p.deudaCobrada,
         total: p.total,
         distanciaKm: p.distanciaKm,
         metodoPago: p.metodoPago,
@@ -545,6 +592,14 @@ export class PedidosService {
         grupoId: p.grupoId,
         programadoPara: p.programadoPara,
         motivoCancelacion: p.motivoCodigo,
+        // Para la app cliente: si puede cancelar y cuánto le costaría (cancelación tardía en efectivo).
+        cancelacion:
+          visor.rol === 'cliente'
+            ? {
+                permitida: ['programado', 'creado', ...ESTADOS_CON_CARGO].includes(p.estado),
+                cargo: p.metodoPago === 'efectivo' && ESTADOS_CON_CARGO.includes(p.estado) ? cargoCancelacion : 0,
+              }
+            : null,
         // El código de entrega solo lo ve el cliente dueño del pedido.
         codigoEntrega: visor.id === p.clienteId ? p.codigoEntrega : null,
         calificacion: c ? { tienda: c.tienda, repartidor: c.repartidor, comentario: c.comentario, creadoEn: c.creadoEn } : null,
@@ -648,6 +703,15 @@ export class PedidosService {
         detalle: t.detalle ?? null, lat: t.ubicacion?.lat ?? null, lng: t.ubicacion?.lng ?? null,
       });
       if (t.hacia === 'entregado') await this.finanzas.registrarEntrega(m, p);
+      if (t.hacia === 'cancelado' || t.hacia === 'rechazado') {
+        await this.finanzas.devolverSaldo(m, p);
+        // Reembolso a la cartera en vez de a la tarjeta (lo decide soporte).
+        if (t.reembolsoA === 'cartera' && p.pagoEstado === 'pagado' && p.clienteId) {
+          await this.finanzas.abonar(m, [{ usuarioId: p.clienteId, pedidoId: p.id, tipo: 'reembolso', monto: p.total, descripcion: `Reembolso del pedido ${folio('R', p.folioNum)}` }]);
+          await m.update(Pedido, p.id, { pagoEstado: 'reembolsado' });
+          await m.insert(EventoPedido, { pedidoId: p.id, tipo: 'reembolsado', usuarioId: null, rol: null, detalle: `$${p.total} a la cartera del cliente` });
+        }
+      }
       if (viajeId) await this.cerrarViajeSiTermino(m, viajeId);
       return m.findOneByOrFail(Pedido, { id: p.id });
     });
@@ -719,6 +783,7 @@ export class PedidosService {
   };
 
   async aceptar(usuario: Usuario, id: string) {
+    await this.finanzas.exigirDeudaPermitida(usuario, 'aceptar pedidos');
     const p = await this.transicionar(id, {
       desde: ['creado'], hacia: 'aceptado_tienda', evento: 'aceptado_tienda', actor: usuario, validar: this.deMiTienda(usuario),
     });
@@ -749,18 +814,41 @@ export class PedidosService {
     return this.vista(p, usuario);
   }
 
-  /** Cliente: programado o recién creado. Tienda: antes de que un repartidor lo tome. Después, solo soporte. */
+  /**
+   * Cliente: hasta antes de que un repartidor lo tome. Si la tienda ya lo aceptó y es en efectivo, se le carga
+   * la tarifa de cancelación (va a su cartera y se le abona a la tienda). Tienda: antes de que lo tome un repartidor.
+   * Después, solo soporte.
+   */
   async cancelar(usuario: Usuario, id: string, dto: MotivoCancelacionDto) {
     const esCliente = usuario.rol === 'cliente';
     const m = this.motivo(esCliente ? 'cliente' : 'tienda', dto);
     const p = await this.transicionar(id, {
-      desde: esCliente ? ['programado', 'creado'] : ['programado', 'creado', 'aceptado_tienda', 'listo_para_recoger'],
+      desde: ['programado', 'creado', 'aceptado_tienda', 'listo_para_recoger'],
       hacia: 'cancelado', evento: 'cancelado', actor: usuario, detalle: m.texto, cambios: () => ({ motivoCodigo: m.codigo }),
       validar: esCliente
         ? (x) => { if (x.clienteId !== usuario.id) throw sinPermiso('El pedido no es tuyo'); }
         : this.deMiTienda(usuario),
+      reglas: esCliente ? (x, em) => this.cobrarCancelacion(x, em) : undefined,
     });
     return this.vista(p, usuario);
+  }
+
+  /** Lo que pagaría el cliente si cancela ahora (0 = sin cargo). */
+  async cargoPorCancelar(p: Pick<Pedido, 'estado' | 'metodoPago'>) {
+    if (p.metodoPago !== 'efectivo' || !ESTADOS_CON_CARGO.includes(p.estado)) return 0;
+    return (await this.finanzas.cargoCancelacion()) ?? 0;
+  }
+
+  /** Cancelación tardía en efectivo: la tienda ya preparaba; el cliente paga la tarifa y se le abona a la tienda. */
+  async cobrarCancelacion(p: Pedido, m: EntityManager) {
+    const cargo = await this.cargoPorCancelar(p);
+    if (!cargo || !p.clienteId) return;
+    const tienda = await m.findOneByOrFail(Tienda, { id: p.tiendaId });
+    const f = folio('R', p.folioNum);
+    await this.finanzas.abonar(m, [
+      { usuarioId: p.clienteId, pedidoId: p.id, tipo: 'cargo_cancelacion', monto: -cargo, descripcion: `Cargo por cancelar el pedido ${f} cuando la tienda ya lo preparaba` },
+      { usuarioId: tienda.ownerId, tiendaId: tienda.id, pedidoId: p.id, tipo: 'compensacion_cancelacion', monto: cargo, descripcion: `Compensación por la cancelación del pedido ${f}` },
+    ]);
   }
 
   async calificar(cliente: Usuario, id: string, dto: CalificacionDto) {

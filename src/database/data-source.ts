@@ -10,6 +10,7 @@ import { ClienteNegocio1731700000000 } from './migrations/1731700000000-ClienteN
 import { FirebaseAuth1731800000000 } from './migrations/1731800000000-FirebaseAuth';
 import { PanelAdmin1732000000000 } from './migrations/1732000000000-PanelAdmin';
 import { TiendasAdmin1732100000000 } from './migrations/1732100000000-TiendasAdmin';
+import { CarteraSolicitudes1732200000000 } from './migrations/1732200000000-CarteraSolicitudes';
 import { PagosStripe1731900000000 } from './migrations/1731900000000-PagosStripe';
 
 try {
@@ -27,7 +28,7 @@ export const opcionesBD = (): DataSourceOptions => ({
   // Conexiones simultáneas a la BD. El pooler de Supabase gratis admite pocas; 10 sobra para un servicio.
   extra: { max: Number(process.env.DATABASE_POOL_MAX ?? 10) },
   entities: ENTIDADES,
-  migrations: [Inicial1731300000000, RlsMigraciones1731400000000, CuentasSeguridad1731500000000, RepartidorTienda1731600000000, ClienteNegocio1731700000000, FirebaseAuth1731800000000, PagosStripe1731900000000, PanelAdmin1732000000000, TiendasAdmin1732100000000],
+  migrations: [Inicial1731300000000, RlsMigraciones1731400000000, CuentasSeguridad1731500000000, RepartidorTienda1731600000000, ClienteNegocio1731700000000, FirebaseAuth1731800000000, PagosStripe1731900000000, PanelAdmin1732000000000, TiendasAdmin1732100000000, CarteraSolicitudes1732200000000],
   namingStrategy: new SnakeNamingStrategy(),
   synchronize: false, // el esquema solo cambia con migraciones
   migrationsRun: true, // al arrancar aplica las migraciones pendientes

@@ -76,6 +76,7 @@ describe('PaPedir API', () => {
       await ds.query(`INSERT INTO usuarios (nombre, email, password_hash, rol) VALUES ($1, $2, $3, $4)`, [rol, `${rol}@prueba.test`, hash, rol]);
       const r = await api('post', '/auth/login', undefined, { email: `${rol}@prueba.test`, password: PASS, app: 'web' }).expect(200);
       tok[rol] = r.body.accessToken;
+      id[rol] = r.body.usuario.id;
     }
   });
 
@@ -221,10 +222,11 @@ describe('PaPedir API', () => {
       await api('patch', `/productos/${id.pastor}`, 'tienda', { precio: 85 }).expect(200);
     });
 
-    it('la tienda acepta y marca listo; el cliente ya no puede cancelar', async () => {
+    it('la tienda acepta y marca listo; el cliente sabe cuánto le costaría cancelar', async () => {
       await api('post', `/pedidos/${id.pedido}/listo`, 'tienda').expect(409); // todavía no lo acepta
       await api('post', `/pedidos/${id.pedido}/aceptar`, 'tienda').expect(200);
-      expect((await api('post', `/pedidos/${id.pedido}/cancelar`, 'cliente', { motivo: 'Ya no' }).expect(409)).body.error).toBe('TRANSICION_INVALIDA');
+      // Ya aceptado y en efectivo: podría cancelar, pero pagando la tarifa (la prueba la hace la sección de cartera).
+      expect((await api('get', `/pedidos/${id.pedido}`, 'cliente')).body.cancelacion).toEqual({ permitida: true, cargo: 25 });
       expect((await api('post', `/pedidos/${id.pedido}/listo`, 'tienda').expect(200)).body.estado).toBe('listo_para_recoger');
     });
 
@@ -263,6 +265,8 @@ describe('PaPedir API', () => {
 
     it('con el pedido asignado la tienda ya no puede cancelar y el otro repartidor no puede marcarlo', async () => {
       await api('post', `/pedidos/${id.pedido}/cancelar`, 'tienda', { motivo: 'x' }).expect(409);
+      expect((await api('post', `/pedidos/${id.pedido}/cancelar`, 'cliente', { motivo: 'Ya no' }).expect(409)).body.error).toBe('TRANSICION_INVALIDA');
+      expect((await api('get', `/pedidos/${id.pedido}`, 'cliente')).body.cancelacion.permitida).toBe(false);
       await api('post', `/repartidor/pedidos/${id.pedido}/llegada-tienda`, id.otro, { ubicacion: CERCA_DE_TIENDA }).expect(403);
       await api('patch', '/repartidor/disponibilidad', id.ganador, { disponible: false }).expect(409); // viaje activo
     });
@@ -857,11 +861,27 @@ describe('PaPedir API', () => {
       await api('get', '/tiendas/mia/reporte', 'cliente').expect(403);
     });
 
-    it('sucursales: crea una copiando el menú y trabaja con X-Tienda-Id', async () => {
+    it('sucursales: la pide la app, soporte la aprueba copiando el menú y trabaja con X-Tienda-Id', async () => {
       const conSucursal = (metodo: any, ruta: string, tiendaId: string, cuerpo?: any) => api(metodo, ruta, 'tienda', cuerpo).set('X-Tienda-Id', tiendaId);
-      const s = (await api('post', '/tiendas/mias', 'tienda', {
-        nombre: 'Tacos Don Pepe Norte', categoria: 'comida', direccion: 'Av. Tecnológico 900', ubicacion: mover(TIENDA, 0.01), copiarMenuDe: id.tiendaId,
-      }).expect(201)).body;
+      const pedida = { nombre: 'Tacos Don Pepe Norte', categoria: 'comida', direccion: 'Av. Tecnológico 900', ubicacion: mover(TIENDA, 0.01), copiarMenuDe: id.tiendaId };
+      // Una que el dueño cancela y otra que soporte rechaza.
+      const cancelada = (await api('post', '/tiendas/solicitudes', 'tienda', { ...pedida, nombre: 'Me arrepentí' }).expect(202)).body;
+      expect((await api('delete', `/tiendas/solicitudes/${cancelada.id}`, 'tienda').expect(200)).body.estado).toBe('cancelada');
+      const rechazada = (await api('post', '/tiendas/mias', 'tienda', { ...pedida, nombre: 'Sin permiso de uso de suelo' }).expect(202)).body;
+      await api('post', `/soporte/solicitudes-tienda/${rechazada.id}/rechazar`, 'soporte', {}).expect(400);
+      expect((await api('post', `/soporte/solicitudes-tienda/${rechazada.id}/rechazar`, 'soporte', { motivo: 'Falta el permiso' }).expect(200)).body).toMatchObject({ estado: 'rechazada', motivo: 'Falta el permiso' });
+      await api('post', `/soporte/solicitudes-tienda/${rechazada.id}/aprobar`, 'soporte').expect(409);
+
+      const sol = (await api('post', '/tiendas/solicitudes', 'tienda', pedida).expect(202)).body;
+      expect(sol).toMatchObject({ estado: 'pendiente', tiendaId: null, datos: { nombre: 'Tacos Don Pepe Norte' } });
+      expect((await api('get', '/tiendas/mias', 'tienda')).body).toHaveLength(1); // todavía no existe
+      await api('get', '/soporte/solicitudes-tienda', 'tienda').expect(403);
+      const pendientes = (await api('get', '/soporte/solicitudes-tienda?estado=pendiente', 'soporte').expect(200)).body;
+      expect(pendientes.data).toEqual([expect.objectContaining({ id: sol.id, dueno: expect.objectContaining({ id: id.tienda }) })]);
+      const aprobada = (await api('post', `/soporte/solicitudes-tienda/${sol.id}/aprobar`, 'admin').expect(200)).body;
+      expect(aprobada).toMatchObject({ estado: 'aprobada', tiendaId: expect.any(String) });
+      expect((await api('get', '/tiendas/solicitudes', 'tienda')).body.map((x) => x.estado)).toEqual(['aprobada', 'rechazada', 'cancelada']);
+      const s = (await conSucursal('get', '/tiendas/mia', aprobada.tiendaId).expect(200)).body;
       expect(s).toMatchObject({ abierta: false, abiertaAhora: false });
       id.sucursal = s.id;
       expect((await api('get', '/tiendas/mias', 'tienda')).body.map((t) => t.id)).toEqual([id.tiendaId, s.id]);
@@ -982,11 +1002,12 @@ describe('PaPedir API', () => {
       // Comisiones: 10 % de lo que cobra la tienda (153) y 10 % del envío (46).
       expect((await api('get', `/pedidos/${p.id}`, 'tienda')).body.comisionTienda).toBe(15.3);
       expect((await api('get', `/pedidos/${p.id}`, 'cliente')).body.comisionTienda).toBeNull();
-      const tiendaSaldo = (await api('get', '/saldo', 'tienda').expect(200)).body;
+      const tiendaSaldo = (await api('get', '/cartera', 'tienda').expect(200)).body;
       const esperadoTienda = await sql(`SELECT sum(comision_tienda)::float8 AS s FROM pedidos p JOIN tiendas t ON t.id = p.tienda_id WHERE t.owner_id = $1`, [id.tienda]);
-      expect(tiendaSaldo).toMatchObject({ saldo: esperadoTienda.s, aFavorDe: 'plataforma' });
-      expect(tiendaSaldo.movimientos.data[0]).toMatchObject({ tipo: 'comision_tienda', monto: 15.3, pedidoId: p.id });
-      await api('get', '/saldo', 'cliente').expect(403);
+      expect(tiendaSaldo).toMatchObject({ saldo: -esperadoTienda.s, estado: 'debe', bloqueado: false, limiteDeuda: 1500 });
+      expect(tiendaSaldo.movimientos.data[0]).toMatchObject({ tipo: 'comision_tienda', monto: -15.3, pedidoId: p.id });
+      expect((await api('get', '/saldo', 'cliente').expect(200)).body).toMatchObject({ saldo: 0, estado: 'en_cero' });
+      await api('get', '/cartera', 'soporte').expect(403);
 
       // Cupón de PaPedir: el repartidor cobra de menos y la plataforma se lo abona.
       const conCupon = await crear({ cupon: 'BIENVENIDA' });
@@ -995,12 +1016,12 @@ describe('PaPedir API', () => {
       await api('post', `/repartidor/pedidos/${conCupon.id}/tomar`, 'rep1').expect(200);
       await api('post', `/soporte/pedidos/${conCupon.id}/completar`, 'soporte', { motivo: 'Entregado sin marcar' }).expect(200);
       const rep = (await api('get', '/saldo', 'rep1')).body;
-      expect(rep.movimientos.data.find((x) => x.pedidoId === conCupon.id && x.tipo === 'descuento_plataforma').monto).toBe(-30);
+      expect(rep.movimientos.data.find((x) => x.pedidoId === conCupon.id && x.tipo === 'descuento_plataforma').monto).toBe(30);
       const esperadoRep = await sql(
         `SELECT coalesce(sum(comision_envio), 0) - coalesce(sum(descuento) FILTER (WHERE descuento_absorbe = 'plataforma'), 0) AS s FROM pedidos WHERE repartidor_id = $1 AND estado = 'entregado'`,
         [id.rep1],
       );
-      expect(rep.saldo).toBeCloseTo(Number(esperadoRep.s), 2);
+      expect(rep.saldo).toBeCloseTo(-Number(esperadoRep.s), 2);
 
       const g = (await api('get', '/repartidor/ganancias', 'rep1')).body.resumen;
       expect(g.propinas).toBeGreaterThanOrEqual(20);
@@ -1014,14 +1035,14 @@ describe('PaPedir API', () => {
     it('admin ve saldos y registra liquidaciones', async () => {
       const antes = (await api('get', '/admin/saldos', 'admin').expect(200)).body;
       const tienda = antes.usuarios.find((u) => u.id === id.tienda);
-      expect(tienda.saldo).toBeGreaterThan(0);
-      expect(antes.totalPorCobrar).toBeGreaterThanOrEqual(tienda.saldo);
+      expect(tienda.saldo).toBeLessThan(0);
+      expect(antes.totalPorCobrar).toBeGreaterThanOrEqual(-tienda.saldo);
       await api('get', '/admin/saldos', 'soporte').expect(403);
-      await api('post', '/admin/liquidaciones', 'admin', { usuarioId: id.cliente, sentido: 'cobro', monto: 10, metodo: 'efectivo' }).expect(400);
+      await api('post', '/admin/liquidaciones', 'admin', { usuarioId: id.soporte, sentido: 'cobro', monto: 10, metodo: 'efectivo' }).expect(400);
 
-      const l = (await api('post', '/admin/liquidaciones', 'admin', { usuarioId: id.tienda, sentido: 'cobro', monto: tienda.saldo, metodo: 'transferencia', referencia: 'SPEI 123' }).expect(201)).body;
+      const l = (await api('post', '/admin/liquidaciones', 'admin', { usuarioId: id.tienda, sentido: 'cobro', monto: -tienda.saldo, metodo: 'transferencia', referencia: 'SPEI 123' }).expect(201)).body;
       expect(l).toMatchObject({ sentido: 'cobro', saldo: 0 });
-      expect((await api('get', '/saldo', 'tienda')).body).toMatchObject({ saldo: 0, aFavorDe: null });
+      expect((await api('get', '/saldo', 'tienda')).body).toMatchObject({ saldo: 0, estado: 'en_cero' });
       expect((await api('get', `/admin/liquidaciones?usuarioId=${id.tienda}`, 'admin')).body.data[0].referencia).toBe('SPEI 123');
       expect((await api('get', '/admin/saldos?rol=tienda', 'admin')).body.usuarios.find((u) => u.id === id.tienda)).toBeUndefined();
     });
@@ -1322,9 +1343,9 @@ describe('PaPedir API', () => {
 
       // PaPedir cobró: le debe la venta a la tienda y el envío + propina al repartidor.
       const tienda = (await api('get', '/saldo', 'tienda')).body.movimientos.data.filter((x) => x.pedidoId === p.id);
-      expect(tienda).toEqual(expect.arrayContaining([expect.objectContaining({ tipo: 'venta_tarjeta', monto: -170 })]));
+      expect(tienda).toEqual(expect.arrayContaining([expect.objectContaining({ tipo: 'venta_tarjeta', monto: 170 })]));
       const rep = (await api('get', '/saldo', 'rep1')).body.movimientos.data.filter((x) => x.pedidoId === p.id);
-      expect(rep).toEqual(expect.arrayContaining([expect.objectContaining({ tipo: 'envio_tarjeta', monto: -61 })]));
+      expect(rep).toEqual(expect.arrayContaining([expect.objectContaining({ tipo: 'envio_tarjeta', monto: 61 })]));
     });
 
     it('si el total cambió, no cobra y libera la tarjeta', async () => {
@@ -1568,6 +1589,122 @@ describe('PaPedir API', () => {
       expect(filtrada.length).toBeGreaterThan(0);
       expect(filtrada.every((a) => a.accion === 'Moderó una reseña')).toBe(true);
       await api('get', '/admin/bitacora', 'soporte').expect(403);
+    });
+  });
+
+  describe('Cartera, solicitudes de cuenta y límites de deuda', () => {
+    const cartera = async (quien: string) => (await api('get', '/cartera', quien).expect(200)).body;
+    const pedido = (extra: any = {}) => ({ tiendaId: id.tiendaId, direccionId: id.casaC, items: [{ productoId: id.pastor, cantidad: 2, opciones: [id.verde] }], ...extra });
+    const crear = async (extra: any = {}) => (await api('post', '/pedidos', 'clienteC', pedido(extra)).expect(201)).body;
+    const entregarConRep1 = async (pid: string) => {
+      await api('post', `/pedidos/${pid}/aceptar`, 'tienda').expect(200);
+      await api('post', `/pedidos/${pid}/listo`, 'tienda').expect(200);
+      await api('post', `/repartidor/pedidos/${pid}/tomar`, 'rep1').expect(200);
+      await api('post', `/soporte/pedidos/${pid}/completar`, 'soporte', { motivo: 'Prueba de cartera' }).expect(200);
+    };
+    const movsDe = async (quien: string, pid: string) => (await api('get', '/cartera?limit=100', quien)).body.movimientos.data.filter((x) => x.pedidoId === pid);
+
+    beforeAll(async () => {
+      await ds.query(`UPDATE tiendas SET abierta = true, pausada_hasta = NULL, usar_horario = false, eliminada_en = NULL WHERE id = $1`, [id.tiendaId]);
+      await ds.query(`UPDATE productos SET stock = NULL, disponible = true WHERE id = $1`, [id.pastor]);
+      await registrar('clienteC', 'cliente');
+      id.casaC = (await api('post', '/direcciones', 'clienteC', { alias: 'Casa', texto: 'Av. Tecnológico 1500', ubicacion: CASA }).expect(201)).body.id;
+    });
+
+    it('cancelar tarde en efectivo cuesta la tarifa; la deuda se suma sola al siguiente pedido', async () => {
+      const p = await crear();
+      expect(p.cancelacion).toEqual({ permitida: true, cargo: 0 }); // la tienda aún no lo acepta
+      await api('post', `/pedidos/${p.id}/aceptar`, 'tienda').expect(200);
+      expect((await api('get', `/pedidos/${p.id}`, 'clienteC')).body.cancelacion).toEqual({ permitida: true, cargo: 25 });
+      expect((await api('get', `/pedidos/${p.id}`, 'tienda')).body.cancelacion).toBeNull();
+      await api('post', `/pedidos/${p.id}/cancelar`, 'clienteC', { codigo: 'cambio_de_opinion' }).expect(200);
+      expect(await cartera('clienteC')).toMatchObject({ saldo: -25, estado: 'debe', limiteDeuda: 150, bloqueado: false });
+      expect(await movsDe('tienda', p.id)).toEqual([expect.objectContaining({ tipo: 'compensacion_cancelacion', monto: 25 })]);
+
+      const base = (await api('post', '/pedidos/cotizar', 'cliente', { ...pedido(), direccionId: id.casa }).expect(200)).body.total;
+      const c = (await api('post', '/pedidos/cotizar', 'clienteC', pedido()).expect(200)).body;
+      expect(c).toMatchObject({ deudaCobrada: 25, saldoAplicado: 0, total: base + 25 });
+
+      // El adeudo se reserva al crear el pedido; si la tienda lo rechaza, vuelve a quedar pendiente.
+      const r = await crear();
+      expect(r).toMatchObject({ deudaCobrada: 25, total: base + 25 });
+      expect((await cartera('clienteC')).saldo).toBe(0);
+      await api('post', `/pedidos/${r.id}/rechazar`, 'tienda', { motivo: 'Sin gas' }).expect(200);
+      expect((await cartera('clienteC')).saldo).toBe(-25);
+
+      // Con límite más bajo que su adeudo, solo puede pagar con tarjeta.
+      const conf = (await api('get', '/admin/configuracion', 'admin')).body.cartera;
+      await api('put', '/admin/configuracion/cartera', 'soporte', conf).expect(403);
+      await api('put', '/admin/configuracion/cartera', 'admin', { ...conf, limiteDeudaCliente: 20 }).expect(200);
+      expect((await api('post', '/pedidos/cotizar', 'clienteC', pedido()).expect(409)).body.error).toBe('DEUDA_EXCEDIDA');
+      await api('put', '/admin/configuracion/cartera', 'admin', conf).expect(200);
+
+      // Se entrega: el repartidor cobró el adeudo en efectivo y ahora él se lo debe a PaPedir.
+      const e = await crear();
+      await entregarConRep1(e.id);
+      expect((await cartera('clienteC')).saldo).toBe(0);
+      expect(await movsDe('rep1', e.id)).toEqual(expect.arrayContaining([expect.objectContaining({ tipo: 'deuda_cobrada', monto: -25 })]));
+      id.entregadoC = e.id;
+    });
+
+    it('soporte reembolsa a la cartera y el saldo se descuenta solo', async () => {
+      await api('post', `/soporte/pedidos/${id.entregadoC}/reembolso`, 'soporte', { monto: 30 }).expect(400);
+      await api('post', `/soporte/pedidos/${id.entregadoC}/reembolso`, 'soporte', { monto: 30, motivo: 'Faltó una bebida' }).expect(200);
+      await api('post', `/soporte/pedidos/${id.entregadoC}/reembolso`, 'soporte', { monto: 10, motivo: 'Llegó frío' }).expect(200);
+      expect((await api('post', `/soporte/pedidos/${id.entregadoC}/reembolso`, 'soporte', { monto: 5000, motivo: 'Todo' }).expect(409)).body.error).toBe('REEMBOLSO_EXCEDIDO');
+      expect(await cartera('clienteC')).toMatchObject({ saldo: 40, estado: 'a_favor' });
+
+      const base = (await api('post', '/pedidos/cotizar', 'cliente', { ...pedido(), direccionId: id.casa })).body.total;
+      const p = await crear();
+      expect(p).toMatchObject({ saldoAplicado: 40, total: base - 40 });
+      expect((await cartera('clienteC')).saldo).toBe(0);
+      // Si soporte lo cancela, el saldo regresa.
+      await api('post', `/soporte/pedidos/${p.id}/cancelar`, 'soporte', { motivo: 'Prueba' }).expect(200);
+      expect((await cartera('clienteC')).saldo).toBe(40);
+      await api('post', `/soporte/pedidos/${p.id}/reembolso`, 'soporte', { monto: 5, motivo: 'X' }).expect(409); // no entregado
+
+      // Entregado en efectivo: el repartidor cobró 40 de menos y PaPedir se los abona.
+      const e = await crear();
+      expect(e.saldoAplicado).toBe(40);
+      await entregarConRep1(e.id);
+      expect(await movsDe('rep1', e.id)).toEqual(expect.arrayContaining([expect.objectContaining({ tipo: 'saldo_cliente', monto: 40 })]));
+      expect((await cartera('clienteC')).movimientos.data.map((x) => x.tipo)).toEqual(expect.arrayContaining(['pago_con_saldo', 'reverso_saldo', 'reembolso', 'cargo_cancelacion', 'pago_deuda']));
+    });
+
+    it('soporte cancela con cargo; con tarjeta puede reembolsar a la cartera', async () => {
+      const p = await crear();
+      await api('post', `/pedidos/${p.id}/aceptar`, 'tienda').expect(200);
+      await api('post', `/soporte/pedidos/${p.id}/cancelar`, 'soporte', { motivo: 'El cliente ya no lo quiso', cobrarCargo: true }).expect(200);
+      expect((await cartera('clienteC')).saldo).toBe(-25);
+      await ds.query(`INSERT INTO movimientos (usuario_id, tipo, monto, descripcion) VALUES ($1, 'ajuste', 25, 'Prueba')`, [id.clienteC]);
+      expect((await cartera('clienteC')).saldo).toBe(0);
+    });
+
+    it('con demasiada deuda, el repartidor no se conecta ni toma pedidos', async () => {
+      const antes = (await cartera('rep1')).saldo;
+      const conf = (await api('get', '/admin/configuracion', 'admin')).body.cartera;
+      // Que deba 10 más de lo que tiene a favor, con un límite de 5.
+      await api('post', '/admin/liquidaciones', 'admin', { usuarioId: id.rep1, sentido: 'pago', monto: Math.max(antes, 0) + 10, metodo: 'efectivo' }).expect(201);
+      expect((await cartera('rep1')).saldo).toBeLessThan(0);
+      await api('put', '/admin/configuracion/cartera', 'admin', { ...conf, limiteDeudaRepartidor: 5 }).expect(200);
+      expect(await cartera('rep1')).toMatchObject({ estado: 'debe', bloqueado: true });
+      const r = await api('patch', '/repartidor/disponibilidad', 'rep1', { disponible: true }).expect(409);
+      expect(r.body.error).toBe('DEUDA_EXCEDIDA');
+      await api('put', '/admin/configuracion/cartera', 'admin', conf).expect(200);
+      expect((await cartera('rep1')).bloqueado).toBe(false);
+    });
+
+    it('soporte regresa una solicitud de cuenta con motivo y al aprobarla se limpia', async () => {
+      await registrar('repNuevo', 'repartidor');
+      await api('post', `/soporte/usuarios/${id.repNuevo}/rechazar`, 'soporte', {}).expect(400);
+      await api('post', `/soporte/usuarios/${id.repNuevo}/rechazar`, 'cliente', { motivo: 'X' }).expect(403);
+      const u = (await api('post', `/soporte/usuarios/${id.repNuevo}/rechazar`, 'soporte', { motivo: 'La licencia está borrosa' }).expect(200)).body;
+      expect(u).toMatchObject({ estado: 'pendiente_aprobacion', motivoRechazo: 'La licencia está borrosa', rechazadaEn: expect.any(String) });
+      expect((await api('get', '/auth/me', 'repNuevo')).body.motivoRechazo).toBe('La licencia está borrosa');
+      expect((await api('patch', '/repartidor/disponibilidad', 'repNuevo', { disponible: true }).expect(409)).body.error).toBe('CUENTA_PENDIENTE');
+      const ok = (await api('post', `/soporte/usuarios/${id.repNuevo}/aprobar`, 'admin').expect(200)).body;
+      expect(ok).toMatchObject({ estado: 'activo', motivoRechazo: null });
+      await api('post', `/soporte/usuarios/${id.repNuevo}/rechazar`, 'soporte', { motivo: 'Ya no' }).expect(409);
     });
   });
 });

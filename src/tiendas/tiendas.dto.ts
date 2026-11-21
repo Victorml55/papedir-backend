@@ -37,8 +37,19 @@ export class SucursalDto {
   @IsString() @IsNotEmpty() @MaxLength(200) direccion: string;
   @ValidateNested() @Type(() => CoordenadasDto) ubicacion: CoordenadasDto;
   @IsOptional() @IsInt() @Min(5) @Max(120) tiempoPreparacionMin?: number;
+  @IsOptional() @IsString() @MaxLength(500) imagenUrl?: string;
   /** Copia categorías, productos y opciones de otra sucursal propia. */
   @IsOptional() @IsUUID() copiarMenuDe?: string;
+}
+
+export class ListaSolicitudesDto {
+  @IsOptional() @IsIn(['pendiente', 'aprobada', 'rechazada', 'cancelada']) estado?: 'pendiente' | 'aprobada' | 'rechazada' | 'cancelada';
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) page = 1;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit = 20;
+}
+
+export class RechazarSolicitudDto {
+  @IsString() @IsNotEmpty() @MaxLength(500) motivo: string;
 }
 
 export class TurnoDto {

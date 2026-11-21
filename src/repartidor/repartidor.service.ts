@@ -1,3 +1,4 @@
+import { FinanzasService } from '../finanzas/finanzas.service';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, Not, Repository } from 'typeorm';
@@ -28,6 +29,7 @@ export class RepartidorService {
     @InjectRepository(Tienda) private readonly tiendas: Repository<Tienda>,
     @InjectRepository(Vehiculo) private readonly vehiculos: Repository<Vehiculo>,
     private readonly rutas: RutasService,
+    private readonly finanzas: FinanzasService,
   ) {}
 
   // ─────────────────────────── vehículo y ganancias
@@ -103,6 +105,7 @@ export class RepartidorService {
     if (disponible && rep.estado !== 'activo') {
       throw conflicto('CUENTA_PENDIENTE', 'Tu cuenta está en revisión; podrás conectarte cuando soporte la apruebe');
     }
+    if (disponible) await this.finanzas.exigirDeudaPermitida(rep, 'conectarte');
     if (!disponible && (await this.viajes.existsBy({ repartidorId: rep.id, estado: 'activo' }))) {
       throw conflicto('VIAJE_ACTIVO', 'Termina tu viaje antes de desconectarte');
     }
@@ -187,6 +190,7 @@ export class RepartidorService {
    * peticiones simultáneas) y luego el pedido (si dos repartidores lo intentan, solo uno gana).
    */
   async tomar(rep: Usuario, pedidoId: string) {
+    await this.finanzas.exigirDeudaPermitida(rep, 'tomar pedidos');
     const pedido = await this.ds.transaction(async (m) => {
       const yo = await m.findOne(Usuario, { where: { id: rep.id }, lock: { mode: 'pessimistic_write' } });
       if (yo.estado !== 'activo') throw conflicto('CUENTA_PENDIENTE', 'Tu cuenta está en revisión');

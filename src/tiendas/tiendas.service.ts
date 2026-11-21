@@ -1,3 +1,4 @@
+import { FinanzasService } from '../finanzas/finanzas.service';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, IsNull, Repository } from 'typeorm';
@@ -5,7 +6,8 @@ import { pagina, PaginaDto, RangoFechasDto, rangoFechas } from '../common/dtos';
 import { conflicto, invalido, noEncontrado } from '../common/errores';
 import { redondear } from '../common/util';
 import { REGLAS } from '../config/reglas';
-import { CategoriaProducto, GrupoOpciones, HorarioTienda, Opcion, Producto, Tienda, Usuario } from '../database/entities';
+import { CategoriaProducto, GrupoOpciones, HorarioTienda, Opcion, Producto, SolicitudTienda, Tienda, Usuario } from '../database/entities';
+import { PushService } from '../nucleo/push.service';
 import { RealtimeService } from '../nucleo/realtime.service';
 import {
   BuscarTiendasDto, CategoriaDto, CategoriaUpdateDto, HorarioDto, OpcionesProductoDto, ProductoDto, ProductoUpdateDto,
@@ -67,6 +69,8 @@ export class TiendasService {
     @InjectRepository(HorarioTienda) private readonly horarios: Repository<HorarioTienda>,
     @InjectRepository(GrupoOpciones) private readonly grupos: Repository<GrupoOpciones>,
     @InjectRepository(Opcion) private readonly opciones: Repository<Opcion>,
+    private readonly finanzas: FinanzasService,
+    private readonly push: PushService,
   ) {}
 
   // ───────── ¿abierta ahora? (función tienda_abierta_ahora de la base)
@@ -209,16 +213,13 @@ export class TiendasService {
     return ts.map((t) => vistaTienda(t, null, abiertas.get(t.id)));
   }
 
-  async crearSucursal(usuario: Usuario, dto: SucursalDto) {
-    if (usuario.estado !== 'activo') throw conflicto('CUENTA_PENDIENTE', 'Tu tienda está en revisión; podrás agregar sucursales cuando soporte la apruebe');
-    if ((await this.tiendas.countBy({ ownerId: usuario.id, eliminadaEn: IsNull() })) >= REGLAS.tienda.maxSucursales) {
-      throw conflicto('LIMITE_SUCURSALES', `Puedes tener máximo ${REGLAS.tienda.maxSucursales} sucursales`);
-    }
-    const origen = dto.copiarMenuDe ? await this.deUsuario(usuario.id, dto.copiarMenuDe) : null;
+  /** Crea la tienda de un dueño (al aprobar su solicitud). Puede copiar el menú de otra sucursal suya. */
+  async crearParaDueno(ownerId: string, dto: SucursalDto) {
+    const origen = dto.copiarMenuDe ? await this.deUsuario(ownerId, dto.copiarMenuDe).catch(() => null) : null;
     const t = await this.ds.transaction(async (m) => {
       const nueva = await m.save(
         m.create(Tienda, {
-          ownerId: usuario.id, nombre: dto.nombre.trim(), categoria: dto.categoria, descripcion: dto.descripcion ?? null,
+          ownerId, nombre: dto.nombre.trim(), categoria: dto.categoria, descripcion: dto.descripcion ?? null, imagenUrl: dto.imagenUrl ?? null,
           telefono: dto.telefono ?? null, direccion: dto.direccion, lat: dto.ubicacion.lat, lng: dto.ubicacion.lng,
           tiempoPreparacionMin: dto.tiempoPreparacionMin ?? 20, abierta: false,
         }),
@@ -226,9 +227,91 @@ export class TiendasService {
       if (origen) await this.copiarMenu(m, origen.id, nueva.id);
       return nueva;
     });
-    this.rt.unir(usuario.id, `tienda:${t.id}`);
-    return this.vista(t);
+    this.rt.unir(ownerId, `tienda:${t.id}`);
+    return t;
   }
+
+  // ───────── solicitudes de tienda nueva (la app Tienda pide, soporte o admin aprueban)
+
+  private vistaSolicitud = (x: SolicitudTienda, dueno?: Pick<Usuario, 'id' | 'nombre' | 'email' | 'telefono'> | null) => ({
+    id: x.id, estado: x.estado, datos: x.datos, motivo: x.motivo, tiendaId: x.tiendaId, revisadaEn: x.revisadaEn, creadoEn: x.creadoEn,
+    ...(dueno !== undefined ? { dueno: dueno ? { id: dueno.id, nombre: dueno.nombre, email: dueno.email, telefono: dueno.telefono } : null } : {}),
+  });
+
+  /** El dueño pide otra tienda o sucursal. Cuentan para el límite sus tiendas activas y sus solicitudes pendientes. */
+  async solicitar(usuario: Usuario, dto: SucursalDto) {
+    if (usuario.estado !== 'activo') throw conflicto('CUENTA_PENDIENTE', 'Tu cuenta está en revisión; podrás pedir otra tienda cuando soporte la apruebe');
+    const repo = this.ds.getRepository(SolicitudTienda);
+    const ocupadas = (await this.tiendas.countBy({ ownerId: usuario.id, eliminadaEn: IsNull() })) + (await repo.countBy({ usuarioId: usuario.id, estado: 'pendiente' }));
+    if (ocupadas >= REGLAS.tienda.maxSucursales) {
+      throw conflicto('LIMITE_SUCURSALES', `Puedes tener máximo ${REGLAS.tienda.maxSucursales} tiendas, contando las solicitudes en revisión`);
+    }
+    if (dto.copiarMenuDe) await this.deUsuario(usuario.id, dto.copiarMenuDe); // que sea suya
+    const s = await repo.save(
+      repo.create({
+        usuarioId: usuario.id,
+        datos: {
+          nombre: dto.nombre.trim(), categoria: dto.categoria, descripcion: dto.descripcion ?? null, imagenUrl: dto.imagenUrl ?? null,
+          telefono: dto.telefono ?? null, direccion: dto.direccion.trim(), ubicacion: dto.ubicacion, tiempoPreparacionMin: dto.tiempoPreparacionMin ?? 20,
+          ...(dto.copiarMenuDe ? { copiarMenuDe: dto.copiarMenuDe } : {}),
+        },
+      }),
+    );
+    this.rt.emitir(['soporte'], 'solicitud_tienda:nueva', { solicitudId: s.id, nombre: s.datos.nombre, dueno: usuario.nombre });
+    return this.vistaSolicitud(s);
+  }
+
+  async misSolicitudes(usuarioId: string) {
+    const filas = await this.ds.getRepository(SolicitudTienda).find({ where: { usuarioId }, order: { creadoEn: 'DESC' }, take: 50 });
+    return filas.map((x) => this.vistaSolicitud(x));
+  }
+
+  async cancelarSolicitud(usuarioId: string, id: string) {
+    const repo = this.ds.getRepository(SolicitudTienda);
+    const s = await repo.findOneBy({ id, usuarioId });
+    if (!s) throw noEncontrado('Solicitud no encontrada');
+    if (s.estado !== 'pendiente') throw conflicto('TRANSICION_INVALIDA', 'Solo se cancelan solicitudes en revisión');
+    s.estado = 'cancelada';
+    return this.vistaSolicitud(await repo.save(s));
+  }
+
+  async solicitudes(q: { estado?: SolicitudTienda['estado']; page: number; limit: number }) {
+    const repo = this.ds.getRepository(SolicitudTienda);
+    const [filas, total] = await repo.findAndCount({
+      where: q.estado ? { estado: q.estado } : {}, order: { creadoEn: q.estado === 'pendiente' ? 'ASC' : 'DESC' }, skip: (q.page - 1) * q.limit, take: q.limit,
+    });
+    const duenos = filas.length ? await this.ds.getRepository(Usuario).findBy({ id: In([...new Set(filas.map((f) => f.usuarioId))]) }) : [];
+    return pagina(filas.map((f) => this.vistaSolicitud(f, duenos.find((d) => d.id === f.usuarioId) ?? null)), total, q);
+  }
+
+  /** Aprobar crea la tienda (cerrada: el dueño decide cuándo abrir). */
+  async aprobarSolicitud(agente: Usuario, id: string) {
+    const repo = this.ds.getRepository(SolicitudTienda);
+    const s = await repo.findOneBy({ id });
+    if (!s) throw noEncontrado('Solicitud no encontrada');
+    if (s.estado !== 'pendiente') throw conflicto('TRANSICION_INVALIDA', `La solicitud ya está ${s.estado}`);
+    const dueno = await this.ds.getRepository(Usuario).findOneBy({ id: s.usuarioId });
+    if (!dueno || dueno.estado !== 'activo') throw conflicto('DUENO_INACTIVO', 'La cuenta del dueño no está activa');
+    const t = await this.crearParaDueno(dueno.id, { ...(s.datos as SucursalDto), copiarMenuDe: (s.datos as { copiarMenuDe?: string }).copiarMenuDe });
+    Object.assign(s, { estado: 'aprobada', tiendaId: t.id, revisadaPor: agente.id, revisadaEn: new Date() });
+    await repo.save(s);
+    this.rt.emitir([`usuario:${dueno.id}`], 'solicitud_tienda:aprobada', { solicitudId: s.id, tiendaId: t.id });
+    void this.push.aUsuarios([dueno.id], 'Tienda aprobada', `${t.nombre} ya está en PaPedir. Ábrela desde la app cuando estés listo.`, { tiendaId: t.id });
+    return this.vistaSolicitud(s, dueno);
+  }
+
+  async rechazarSolicitud(agente: Usuario, id: string, motivo: string) {
+    const repo = this.ds.getRepository(SolicitudTienda);
+    const s = await repo.findOneBy({ id });
+    if (!s) throw noEncontrado('Solicitud no encontrada');
+    if (s.estado !== 'pendiente') throw conflicto('TRANSICION_INVALIDA', `La solicitud ya está ${s.estado}`);
+    Object.assign(s, { estado: 'rechazada', motivo: motivo.trim(), revisadaPor: agente.id, revisadaEn: new Date() });
+    await repo.save(s);
+    this.rt.emitir([`usuario:${s.usuarioId}`], 'solicitud_tienda:rechazada', { solicitudId: s.id, motivo });
+    void this.push.aUsuarios([s.usuarioId], 'Solicitud de tienda rechazada', `${s.datos.nombre}: ${motivo}`, { solicitudId: s.id });
+    return this.vistaSolicitud(s, null);
+  }
+
 
   /** Copia categorías, productos (sin inventario) y opciones de una sucursal a otra. */
   private async copiarMenu(m: EntityManager, desde: string, hacia: string) {
@@ -258,6 +341,7 @@ export class TiendasService {
     if (dto.abierta && usuario.estado !== 'activo') {
       throw conflicto('CUENTA_PENDIENTE', 'Tu tienda está en revisión; podrás abrir cuando soporte la apruebe');
     }
+    if (dto.abierta && !t.abierta) await this.finanzas.exigirDeudaPermitida(usuario, 'abrir tu tienda');
     const { ubicacion, ...resto } = dto;
     Object.assign(t, resto);
     if (ubicacion) Object.assign(t, { lat: ubicacion.lat, lng: ubicacion.lng });

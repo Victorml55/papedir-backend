@@ -260,6 +260,14 @@ export async function sembrarDemo(app: INestApplication, ds: DataSource) {
   await ticket(entregados[10].id, await duenoDe(entregados[10].id), '¿Puedo cambiar la dirección?', 'Me equivoqué de número de casa.',
     'Listo, ya quedó corregida. ¡Gracias!', 'cerrado');
 
+  // Cartera: soporte reembolsa el refresco que faltó a la cartera del cliente.
+  await post(`/soporte/pedidos/${entregados[30].id}/reembolso`, SOPORTE, { monto: 25, motivo: 'Faltó un refresco' }, true);
+  // Una sucursal que pidió un dueño desde la app y espera revisión.
+  await post('/tiendas/solicitudes', 'tienda@papedir.test', {
+    nombre: 'Tacos Don Pepe Sur', categoria: 'comida', telefono: '4615550011', descripcion: 'Segunda sucursal, cerca de la Alameda',
+    direccion: 'Av. Irrigación 210, Celaya, Gto.', ubicacion: { lat: 20.5161, lng: -100.8095 }, tiempoPreparacionMin: 20,
+  }, true);
+
   // Saldos: PaPedir ya cobró una parte de la comisión a dos cuentas.
   const saldos = (await get('/admin/saldos', ADMIN)).usuarios ?? [];
   // Un cobro (alguien que le debía a PaPedir) y un pago (alguien a quien PaPedir le debía).
@@ -268,7 +276,7 @@ export async function sembrarDemo(app: INestApplication, ds: DataSource) {
     const monto = Math.round(Math.abs(s.saldo) * 0.6 * 100) / 100;
     if (monto > 0) {
       await post('/admin/liquidaciones', ADMIN, {
-        usuarioId: s.id, sentido: s.saldo > 0 ? 'cobro' : 'pago', monto,
+        usuarioId: s.id, sentido: s.saldo < 0 ? 'cobro' : 'pago', monto,
         metodo: 'transferencia', referencia: `SPEI ${rnd.entero(100000, 999999)}`, nota: 'Corte semanal',
       }, true);
     }

@@ -20,6 +20,9 @@ export class Usuario {
   @Column({ type: 'text' }) rol: Rol;
   @Column({ type: 'text', default: 'activo' }) estado: EstadoCuenta;
   @Column({ nullable: true }) motivoBaneo: string | null;
+  /** Por qué soporte no aprobó la solicitud de cuenta; la cuenta sigue pendiente para que corrija. */
+  @Column({ type: 'text', nullable: true }) motivoRechazo: string | null;
+  @Column({ type: 'timestamptz', nullable: true }) rechazadaEn: Date | null;
   /** Solo repartidores: conectado para recibir pedidos. */
   @Column({ default: false }) disponible: boolean;
   @Column({ type: 'double precision', nullable: true }) lat: number | null;
@@ -262,6 +265,10 @@ export class Pedido {
   @Column({ type: 'text', nullable: true }) descuentoAbsorbe: 'plataforma' | 'tienda' | null;
   /** Lo que el repartidor le paga a la tienda: subtotal menos el descuento si lo absorbe la tienda. */
   @Column(dinero) montoTienda: number;
+  /** Saldo a favor del cliente que pagó parte del pedido (ya restado del total). */
+  @Column({ ...dinero, default: 0 }) saldoAplicado: number;
+  /** Deuda anterior del cliente que se cobró en este pedido (ya sumada al total). */
+  @Column({ ...dinero, default: 0 }) deudaCobrada: number;
   @Column({ type: 'jsonb', default: () => "'[]'" }) recargos: Recargo[];
   /** Pedidos de varias tiendas hechos en un mismo carrito. */
   @Column({ type: 'uuid', nullable: true }) grupoId: string | null;
@@ -439,9 +446,31 @@ export class Movimiento {
   @Column({ type: 'uuid', nullable: true }) tiendaId: string | null;
   @Column({ type: 'uuid', nullable: true }) pedidoId: string | null;
   @Column({ type: 'uuid', nullable: true }) liquidacionId: string | null;
-  @Column({ type: 'text' }) tipo: 'comision_tienda' | 'comision_envio' | 'descuento_plataforma' | 'liquidacion' | 'venta_tarjeta' | 'envio_tarjeta';
+  @Column({ type: 'text' }) tipo: TipoMovimiento;
   @Column(dinero) monto: number;
   @Column() descripcion: string;
+  @CreateDateColumn(fecha) creadoEn: Date;
+}
+
+export type TipoMovimiento =
+  | 'comision_tienda' | 'comision_envio' | 'descuento_plataforma' | 'liquidacion' | 'venta_tarjeta' | 'envio_tarjeta'
+  | 'pago_con_saldo' | 'reverso_saldo' | 'saldo_cliente' | 'pago_deuda' | 'deuda_cobrada' | 'reembolso'
+  | 'cargo_cancelacion' | 'compensacion_cancelacion' | 'ajuste';
+
+/** Una tienda (sucursal) que un dueño ya aprobado pide desde la app; soporte o admin la revisan. */
+@Entity('solicitudes_tienda')
+export class SolicitudTienda {
+  @PrimaryGeneratedColumn('uuid') id: string;
+  @Column('uuid') usuarioId: string;
+  @Column({ type: 'jsonb' }) datos: {
+    nombre: string; categoria: string; descripcion?: string | null; imagenUrl?: string | null; telefono?: string | null;
+    direccion: string; ubicacion: { lat: number; lng: number }; tiempoPreparacionMin?: number;
+  };
+  @Column({ type: 'text', default: 'pendiente' }) estado: 'pendiente' | 'aprobada' | 'rechazada' | 'cancelada';
+  @Column({ type: 'text', nullable: true }) motivo: string | null;
+  @Column({ type: 'uuid', nullable: true }) revisadaPor: string | null;
+  @Column({ type: 'timestamptz', nullable: true }) revisadaEn: Date | null;
+  @Column({ type: 'uuid', nullable: true }) tiendaId: string | null;
   @CreateDateColumn(fecha) creadoEn: Date;
 }
 
@@ -473,4 +502,4 @@ export class Mensaje {
 export const ENTIDADES = [
   Usuario, CodigoVerificacion, EventoCuenta, RefreshToken, Dispositivo, Direccion, Tienda, CategoriaProducto, Producto, Viaje, Pedido, PedidoItem,
   EventoPedido, Calificacion, Ticket, Mensaje, Vehiculo, Documento, HorarioTienda, GrupoOpciones, Opcion, Favorito, Cupon,
-  Notificacion, MensajePedido, Zona, Configuracion, Liquidacion, Movimiento, Suscripcion, AccionInterna];
+  Notificacion, MensajePedido, Zona, Configuracion, Liquidacion, Movimiento, Suscripcion, AccionInterna, SolicitudTienda];
