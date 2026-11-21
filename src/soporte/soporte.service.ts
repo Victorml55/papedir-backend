@@ -177,6 +177,8 @@ export class SoporteService {
       tiendas: tiendas.map((t) => ({ id: t.id, nombre: t.nombre, abierta: t.abierta })),
       vehiculo: u.rol === 'repartidor' ? vistaVehiculo(await this.ds.getRepository(Vehiculo).findOneBy({ repartidorId: u.id })) : null,
       documentosCompletos: u.rol === 'repartidor' || u.rol === 'tienda' ? await this.documentos.completos(u) : null,
+      // Repartidor: si está conectado ahora (soporte lo puede desconectar).
+      disponible: u.rol === 'repartidor' ? u.disponible : null,
     };
   }
 

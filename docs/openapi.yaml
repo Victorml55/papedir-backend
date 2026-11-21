@@ -4447,6 +4447,7 @@ components:
               type: boolean
               nullable: true
               description: Repartidor y tienda; true si sus documentos requeridos están aprobados
+            disponible: { type: boolean, nullable: true, description: 'Repartidor: si está conectado ahora' }
 
     EventoCuenta:
       type: object
@@ -5324,7 +5325,7 @@ components:
         pedidosEnCurso: { type: integer }
         entregasHoy: { type: integer }
         entregasTotales: { type: integer }
-        saldo: { type: number, description: 'Positivo: le debe a PaPedir' }
+        saldo: { type: number, description: 'Cartera: positivo a su favor, negativo lo que debe' }
         creadoEn: { type: string, format: date-time }
 
     MapaDespacho:
