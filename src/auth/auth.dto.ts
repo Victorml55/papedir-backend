@@ -1,3 +1,4 @@
+import { EsCategoria } from '../config/catalogos';
 import { Type } from 'class-transformer';
 import {
   Equals, IsEmail, IsIn, IsNotEmpty, IsOptional, IsString, Matches, MaxLength, MinLength, ValidateIf, ValidateNested,
@@ -10,7 +11,7 @@ const TELEFONO = /^[0-9]{10}$/;
 
 export class TiendaRegistroDto {
   @IsString() @IsNotEmpty() @MaxLength(80) nombre: string;
-  @IsIn(CATEGORIAS_TIENDA) categoria: string;
+  @EsCategoria() categoria: string;
   @IsString() @IsNotEmpty() @MaxLength(200) direccion: string;
   @ValidateNested() @Type(() => CoordenadasDto) ubicacion: CoordenadasDto;
 }

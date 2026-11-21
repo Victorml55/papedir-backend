@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: PaPedir API
-  version: 1.9.0
+  version: 1.10.0
   description: |
     Contrato de la API de PaPedir, plataforma de reparto a domicilio en Celaya, Gto.
 
@@ -56,6 +56,12 @@ tags:
     description: Subida de imágenes (productos, tiendas, perfil, evidencia de entrega)
   - name: Documentos
     description: Documentos privados de repartidores y tiendas (INE, licencia...) y su revisión por soporte
+  - name: Geo
+    description: Sugerencias de direcciones y dirección de un punto
+  - name: Catálogos
+    description: Listas que edita admin (categorías, motivos, documentos, términos)
+  - name: Panel
+    description: Control total desde la web de soporte y admin
 
 security:
   - bearerAuth: []
@@ -2402,6 +2408,9 @@ paths:
       tags: [Soporte]
       summary: Buscar cualquier pedido (rol soporte/admin)
       parameters:
+        - { name: clienteId, in: query, schema: { type: string, format: uuid } }
+        - { name: repartidorId, in: query, schema: { type: string, format: uuid } }
+        - { name: tiendaId, in: query, schema: { type: string, format: uuid } }
         - name: estado
           in: query
           schema: { type: string }
@@ -2423,6 +2432,47 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/Pedido' }
                   meta: { $ref: '#/components/schemas/PaginaMeta' }
+
+    post:
+      operationId: crearPedidoPorCliente
+      tags: [Panel]
+      summary: Crear un pedido a nombre de un cliente (efectivo)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { allOf: [{ $ref: '#/components/schemas/CrearPedidoRequest' }, { type: object, required: [clienteId], properties: { clienteId: { type: string, format: uuid } } }] }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /soporte/pedidos/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    patch:
+      operationId: editarPedidoPanel
+      tags: [Panel]
+      summary: Editar notas, datos de entrega o propina
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [motivo], properties: { notas: { type: string, nullable: true }, destinoNombre: { type: string }, destinoTelefono: { type: string, pattern: '^[0-9]{10}$' }, destinoReferencias: { type: string, nullable: true }, propina: { type: number, minimum: 0, maximum: 1000, description: Solo efectivo y sin terminar; ajusta el total }, motivo: { type: string } } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+        '409':
+          description: El pedido terminó o se pagó con tarjeta
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /soporte/pedidos/{id}/cancelar:
     parameters:
@@ -2562,12 +2612,542 @@ paths:
                 estado: { $ref: '#/components/schemas/EstadoTicket' }
                 asignarmelo: { type: boolean }
                 atendidoPor: { type: string, format: uuid, description: 'Pasar el ticket a otra persona del equipo (soporte o admin)' }
+                asunto: { type: string, maxLength: 120 }
+                prioridad: { type: string, enum: [baja, normal, alta, urgente] }
       responses:
         '200':
           description: OK
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Ticket' }
+
+  /geo/sugerencias:
+    get:
+      operationId: sugerenciasDireccion
+      tags: [Geo]
+      summary: Sugerencias de direcciones mientras se escribe
+      description: "Para autocompletar al capturar una ubicación (tiendas, direcciones de clientes, correcciones). Prioriza resultados cerca de lat/lng (por omisión, Celaya). Cualquier usuario con sesión."
+      parameters:
+        - { name: q, in: query, required: true, schema: { type: string, minLength: 3, maxLength: 150 } }
+        - { name: lat, in: query, schema: { type: number } }
+        - { name: lng, in: query, schema: { type: number } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 10, default: 6 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Sugerencia' } }
+        '503':
+          description: GEO_NO_DISPONIBLE; marcar el punto en el mapa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /geo/direccion:
+    get:
+      operationId: direccionDePunto
+      tags: [Geo]
+      summary: Dirección de un punto marcado en el mapa
+      parameters:
+        - { name: lat, in: query, required: true, schema: { type: number } }
+        - { name: lng, in: query, required: true, schema: { type: number } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  resultado: { type: object, nullable: true, allOf: [{ $ref: '#/components/schemas/Sugerencia' }] }
+        '503': { description: GEO_NO_DISPONIBLE }
+
+  /catalogos:
+    get:
+      security: []
+      operationId: catalogosVigentes
+      tags: [Catálogos]
+      summary: Categorías, motivos, documentos y versión de términos vigentes
+      description: "Público. Lo edita admin; las apps lo leen en vez de tener las listas fijas."
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CatalogosPublicos' }
+
+  /admin/catalogos:
+    get:
+      operationId: catalogosAdmin
+      tags: [Catálogos]
+      summary: Catálogos completos (incluye lo desactivado)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Catalogos' }
+    put:
+      operationId: guardarCatalogos
+      tags: [Catálogos]
+      summary: Guardar catálogos
+      description: "Los códigos que ya existen no se quitan, solo se desactivan. El motivo otro debe seguir activo. Cambiar versionTerminos obliga a todos a aceptar los términos otra vez."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Catalogos' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Catalogos' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /soporte/usuarios/{id}/direcciones:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: direccionesDeCliente
+      tags: [Panel]
+      summary: Direcciones de un cliente
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Direccion' } }
+    post:
+      operationId: crearDireccionDeCliente
+      tags: [Panel]
+      summary: Agregar dirección a un cliente
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DireccionInput' }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Direccion' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /soporte/usuarios/{id}/direcciones/{dir}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+      - { name: dir, in: path, required: true, schema: { type: string, format: uuid } }
+    patch:
+      operationId: editarDireccionDeCliente
+      tags: [Panel]
+      summary: Editar dirección de un cliente
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DireccionInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Direccion' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: borrarDireccionDeCliente
+      tags: [Panel]
+      summary: Borrar dirección de un cliente
+      responses:
+        '204': { description: Hecho }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /soporte/usuarios/{id}/vehiculo:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    put:
+      operationId: vehiculoDeRepartidor
+      tags: [Panel]
+      summary: Editar el vehículo de un repartidor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Vehiculo' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Vehiculo' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /soporte/repartidores/{id}/desconectar:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: desconectarRepartidor
+      tags: [Panel]
+      summary: Desconectar a un repartidor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [motivo], properties: { motivo: { type: string, maxLength: 500 } } }
+      responses:
+        '200':
+          description: OK
+        '409':
+          description: Ya desconectado o con viaje activo (VIAJE_ACTIVO)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /soporte/pedidos/cotizar:
+    post:
+      operationId: cotizarPorCliente
+      tags: [Panel]
+      summary: Cotizar a nombre de un cliente (efectivo)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { allOf: [{ $ref: '#/components/schemas/CotizarPedidoRequest' }, { type: object, required: [clienteId], properties: { clienteId: { type: string, format: uuid } } }] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Cotizacion' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /soporte/pedidos/{id}/asignar:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: asignarPedido
+      tags: [Panel]
+      summary: Asignar un pedido listo a un repartidor
+      description: "Solo pedidos listos para recoger y repartidores conectados. No revisa distancia; respeta el máximo de pedidos por viaje."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [repartidorId, motivo], properties: { repartidorId: { type: string, format: uuid }, motivo: { type: string } } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+        '409':
+          description: REPARTIDOR_DESCONECTADO, VIAJE_LLENO, CUENTA_PENDIENTE o TRANSICION_INVALIDA
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /soporte/pedidos/{id}/avanzar:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: avanzarPedido
+      tags: [Panel]
+      summary: Mover el pedido al siguiente estado
+      description: "programado → creado → aceptado_tienda → listo_para_recoger; asignado → en_tienda → en_camino → en_domicilio. Listo se asigna y en domicilio se completa con sus propias rutas."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [motivo], properties: { motivo: { type: string, maxLength: 500 } } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+        '409':
+          description: TRANSICION_INVALIDA
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /soporte/tickets:
+    post:
+      operationId: ticketANombre
+      tags: [Panel]
+      summary: Abrir un ticket a nombre de alguien
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { allOf: [{ $ref: '#/components/schemas/TicketInput' }, { type: object, required: [usuarioId], properties: { usuarioId: { type: string, format: uuid } } }] }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ticket' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /soporte/tiendas/{id}/categorias:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: categoriasDeTienda
+      tags: [Panel]
+      summary: Categorías del menú de una tienda
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/CategoriaProducto' } }
+    post:
+      operationId: crearCategoriaDeTienda
+      tags: [Panel]
+      summary: Crear categoría en el menú de una tienda
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CategoriaProductoInput' }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CategoriaProducto' }
+
+  /soporte/categorias/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    patch:
+      operationId: editarCategoriaPanel
+      tags: [Panel]
+      summary: Editar categoría del menú
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CategoriaProductoInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CategoriaProducto' }
+    delete:
+      operationId: borrarCategoriaPanel
+      tags: [Panel]
+      summary: Borrar categoría del menú
+      responses:
+        '204': { description: Hecho }
+        '409':
+          description: CATEGORIA_CON_PRODUCTOS
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /soporte/tiendas/{id}/productos:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: productosDeTienda
+      tags: [Panel]
+      summary: Productos de una tienda
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Producto' } }
+    post:
+      operationId: crearProductoDeTienda
+      tags: [Panel]
+      summary: Crear producto en una tienda
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductoInput' }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Producto' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /soporte/productos/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    patch:
+      operationId: editarProductoPanel
+      tags: [Panel]
+      summary: Editar producto
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductoInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Producto' }
+    delete:
+      operationId: borrarProductoPanel
+      tags: [Panel]
+      summary: Borrar producto
+      responses:
+        '204': { description: Hecho }
+
+  /soporte/productos/{id}/opciones:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    put:
+      operationId: opcionesProductoPanel
+      tags: [Panel]
+      summary: Reemplazar las opciones de un producto
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [grupos], properties: { grupos: { type: array, items: { $ref: '#/components/schemas/GrupoOpcionesInput' } } } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Producto' }
+
+  /soporte/tiendas/{id}/horario:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: horarioDeTienda
+      tags: [Panel]
+      summary: Horario de una tienda
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Horario' }
+    put:
+      operationId: guardarHorarioDeTienda
+      tags: [Panel]
+      summary: Reemplazar el horario de una tienda
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Horario' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Horario' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /admin/documentos/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    delete:
+      operationId: borrarDocumento
+      tags: [Admin]
+      summary: Borrar un documento
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [motivo], properties: { motivo: { type: string, maxLength: 500 } } }
+      responses:
+        '204': { description: Hecho }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/tickets/{id}/mensajes/{mensaje}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+      - { name: mensaje, in: path, required: true, schema: { type: string, format: uuid } }
+    delete:
+      operationId: borrarMensajeTicket
+      tags: [Admin]
+      summary: Borrar un mensaje inapropiado de un ticket
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [motivo], properties: { motivo: { type: string, maxLength: 500 } } }
+      responses:
+        '204': { description: Hecho }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/usuarios/{id}/ajuste:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: ajusteCartera
+      tags: [Finanzas]
+      summary: Abonar o cargar a mano en una cartera
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [monto, motivo], properties: { monto: { type: number, description: '+ abona, − carga', example: 50 }, motivo: { type: string, maxLength: 300 } } }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EstadoDeCuenta' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /admin/liquidaciones/{id}/anular:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: anularLiquidacion
+      tags: [Finanzas]
+      summary: Anular una liquidación mal capturada
+      description: "Registra el movimiento contrario; la liquidación queda marcada como anulada."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [motivo], properties: { motivo: { type: string, maxLength: 500 } } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, properties: { id: { type: string, format: uuid }, anuladaEn: { type: string, format: date-time }, anuladaMotivo: { type: string }, saldo: { type: number } } }
+        '409':
+          description: LIQUIDACION_ANULADA
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /admin/resenas/{pedidoId}:
+    parameters:
+      - { name: pedidoId, in: path, required: true, schema: { type: string, format: uuid } }
+    delete:
+      operationId: borrarResena
+      tags: [Admin]
+      summary: Borrar una reseña falsa
+      description: "Deja de contar en los promedios de la tienda y del repartidor."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [motivo], properties: { motivo: { type: string, maxLength: 500 } } }
+      responses:
+        '204': { description: Hecho }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /soporte/usuarios:
     get:
@@ -2647,6 +3227,29 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/Documento' }
+
+    post:
+      operationId: documentoANombre
+      tags: [Panel]
+      summary: Subir un documento a nombre de una tienda o repartidor
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [tipo, archivo]
+              properties:
+                tipo: { type: string, description: Tipo del catálogo de documentos }
+                aprobar: { type: string, enum: ['true', 'false'], description: true = queda aprobado al subirlo }
+                archivo: { type: string, format: binary }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Documento' }
+        '400': { $ref: '#/components/responses/ValidationError' }
 
   /soporte/documentos/{id}/archivo:
     parameters:
@@ -2799,7 +3402,8 @@ paths:
     post:
       operationId: crearUsuarioInterno
       tags: [Admin]
-      summary: Crear cuentas de soporte o admin
+      summary: Crear cuentas del equipo, clientes o repartidores
+      description: Nacen activas y con el correo verificado; clientes y repartidores aceptan los términos al entrar. Las tiendas se crean con POST /admin/tiendas.
       requestBody:
         required: true
         content:
@@ -2813,7 +3417,8 @@ paths:
                 password: { type: string, minLength: 8 }
                 rol:
                   type: string
-                  enum: [soporte, admin]
+                  enum: [soporte, admin, cliente, repartidor]
+                telefono: { type: string, pattern: '^[0-9]{10}$', description: Obligatorio para cliente y repartidor }
       responses:
         '201':
           description: Creado
@@ -3554,6 +4159,20 @@ paths:
                   destinatarios: { type: integer }
                   modo: { type: string, enum: [enviada, simulada], description: '`simulada`: la API no tiene Firebase configurado' }
 
+    get:
+      operationId: historialPush
+      tags: [Admin]
+      summary: Notificaciones generales enviadas
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/EnvioPush' } }, meta: { $ref: '#/components/schemas/PaginaMeta' } } }
+
   /admin/bitacora:
     get:
       operationId: listarBitacoraAdmin
@@ -3952,7 +4571,8 @@ components:
     # ── Tiendas / productos ──
     CategoriaTienda:
       type: string
-      enum: [comida, abarrotes, farmacia, materiales, otros]
+      example: comida
+      description: 'Código del catálogo de categorías (GET /catalogos). Base: comida, abarrotes, farmacia, materiales, otros; admin puede agregar más.'
 
     Tienda:
       type: object
@@ -4952,7 +5572,8 @@ components:
     # ── Documentos ──
     TipoDocumento:
       type: string
-      enum: [ine, licencia, tarjeta_circulacion, comprobante_domicilio, constancia_fiscal]
+      example: ine
+      description: 'Tipo del catálogo de documentos (GET /catalogos). Base: ine, licencia, tarjeta_circulacion, comprobante_domicilio, constancia_fiscal.'
 
     Documento:
       type: object
@@ -5188,7 +5809,95 @@ components:
             id: { type: string, format: uuid }
             registradoPor: { type: string, format: uuid }
             creadoEn: { type: string, format: date-time }
+            anuladaEn: { type: string, format: date-time, nullable: true }
+            anuladaMotivo: { type: string, nullable: true }
         - $ref: '#/components/schemas/LiquidacionInput'
+
+    Sugerencia:
+      type: object
+      properties:
+        texto: { type: string, example: 'Instituto Tecnológico de Celaya, Av. Tecnológico' }
+        detalle: { type: string, nullable: true, example: 'Celaya, Gto.' }
+        ubicacion: { $ref: '#/components/schemas/Coordenadas' }
+        tipo: { type: string, nullable: true, example: university }
+
+    MotivoCatalogo:
+      type: object
+      required: [codigo, texto, activo]
+      properties:
+        codigo: { type: string, pattern: '^[a-z0-9_]{2,40}$' }
+        texto: { type: string }
+        activo: { type: boolean }
+
+    Catalogos:
+      type: object
+      required: [motivos, categorias, documentos, legal]
+      properties:
+        motivos:
+          type: object
+          properties:
+            cliente: { type: array, items: { $ref: '#/components/schemas/MotivoCatalogo' } }
+            tienda: { type: array, items: { $ref: '#/components/schemas/MotivoCatalogo' } }
+            soporte: { type: array, items: { $ref: '#/components/schemas/MotivoCatalogo' } }
+            sistema: { type: array, items: { $ref: '#/components/schemas/MotivoCatalogo' } }
+        categorias:
+          type: array
+          items:
+            type: object
+            required: [codigo, nombre, activa]
+            properties:
+              codigo: { type: string, pattern: '^[a-z0-9_]{2,40}$' }
+              nombre: { type: string }
+              activa: { type: boolean }
+        documentos:
+          type: object
+          properties:
+            repartidor: { type: array, items: { $ref: '#/components/schemas/DocumentoCatalogo' } }
+            tienda: { type: array, items: { $ref: '#/components/schemas/DocumentoCatalogo' } }
+            exigirParaAprobar: { type: boolean }
+        legal:
+          type: object
+          properties:
+            versionTerminos: { type: string, example: 2026-11 }
+
+    DocumentoCatalogo:
+      type: object
+      required: [tipo, nombre, obligatorio]
+      properties:
+        tipo: { type: string, pattern: '^[a-z0-9_]{2,40}$' }
+        nombre: { type: string }
+        obligatorio: { type: boolean }
+
+    CatalogosPublicos:
+      type: object
+      properties:
+        categorias: { type: array, items: { type: object, properties: { codigo: { type: string }, nombre: { type: string } } } }
+        motivos:
+          type: object
+          properties:
+            cliente: { type: array, items: { $ref: '#/components/schemas/Motivo' } }
+            tienda: { type: array, items: { $ref: '#/components/schemas/Motivo' } }
+            soporte: { type: array, items: { $ref: '#/components/schemas/Motivo' } }
+        documentos:
+          type: object
+          properties:
+            repartidor: { type: array, items: { $ref: '#/components/schemas/DocumentoCatalogo' } }
+            tienda: { type: array, items: { $ref: '#/components/schemas/DocumentoCatalogo' } }
+        versionTerminos: { type: string }
+
+    EnvioPush:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        destino: { type: string, enum: [tema, rol] }
+        tema: { type: string, nullable: true }
+        rol: { type: string, nullable: true }
+        titulo: { type: string }
+        cuerpo: { type: string }
+        destinatarios: { type: integer, nullable: true }
+        modo: { type: string, example: enviada }
+        creadoEn: { type: string, format: date-time }
+        actor: { type: object, nullable: true, properties: { id: { type: string, format: uuid }, nombre: { type: string, nullable: true } } }
 
     Plan:
       type: object
@@ -5239,6 +5948,7 @@ components:
         asunto: { type: string }
         descripcion: { type: string }
         estado: { $ref: '#/components/schemas/EstadoTicket' }
+        prioridad: { type: string, enum: [baja, normal, alta, urgente] }
         pedidoId: { type: string, format: uuid, nullable: true }
         creadoPor:
           type: object

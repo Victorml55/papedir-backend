@@ -5,7 +5,8 @@ import { Actor, Roles, TiendaSel } from '../common/auth';
 import { pagina, PaginaDto, RangoFechasDto, rangoFechas } from '../common/dtos';
 import { conflicto, invalido, noEncontrado } from '../common/errores';
 import { redondear, UuidPipe } from '../common/util';
-import { MOTIVOS, REGLAS } from '../config/reglas';
+import { REGLAS } from '../config/reglas';
+import { textoMotivo } from '../config/catalogos';
 import { vistaCupon } from '../cupones/cupones.service';
 import { Cupon, Liquidacion, Movimiento, Tienda, Usuario, Zona } from '../database/entities';
 import { FinanzasService } from '../finanzas/finanzas.service';
@@ -208,7 +209,7 @@ export class NegocioService {
 
   private vistaLiquidacion = (l: Liquidacion) => ({
     id: l.id, usuarioId: l.usuarioId, sentido: l.sentido, monto: l.monto, metodo: l.metodo, referencia: l.referencia, nota: l.nota,
-    registradoPor: l.registradoPor, creadoEn: l.creadoEn,
+    registradoPor: l.registradoPor, creadoEn: l.creadoEn, anuladaEn: l.anuladaEn, anuladaMotivo: l.anuladaMotivo,
   });
 
   async listarLiquidaciones(q: ListarLiquidacionesDto) {
@@ -233,8 +234,7 @@ export class NegocioService {
        GROUP BY 1 ORDER BY count(*) DESC`,
       [desde, hasta],
     );
-    const textos = new Map<string, string>(Object.values(MOTIVOS).flat().map(([c, t]) => [c, t] as [string, string]));
-    return { desde, hasta, motivos: filas.map((f) => ({ ...f, texto: textos.get(f.codigo) ?? f.codigo })) };
+    return { desde, hasta, motivos: filas.map((f) => ({ ...f, texto: textoMotivo(f.codigo) })) };
   }
 }
 

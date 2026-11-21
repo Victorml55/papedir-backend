@@ -5,7 +5,8 @@ import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { pagina } from '../common/dtos';
 import { AppError, conflicto, invalido, noEncontrado, sinPermiso } from '../common/errores';
 import { coords, folio, redondear } from '../common/util';
-import { ESTADOS_FINALES, EstadoPedido, MOTIVOS, REGLAS } from '../config/reglas';
+import { ESTADOS_FINALES, EstadoPedido, REGLAS } from '../config/reglas';
+import { ListaMotivos, motivosActivos } from '../config/catalogos';
 import { CuponesService } from '../cupones/cupones.service';
 import { FinanzasService } from '../finanzas/finanzas.service';
 import { PagosService } from '../nucleo/pagos.service';
@@ -791,10 +792,10 @@ export class PedidosService {
   }
 
   /** Traduce código y/o texto del catálogo de motivos. Un código desconocido para ese rol es un error. */
-  motivo(lista: keyof typeof MOTIVOS, dto: MotivoCancelacionDto) {
-    const fila = dto.codigo ? MOTIVOS[lista].find(([c]) => c === dto.codigo) : null;
+  motivo(lista: ListaMotivos, dto: MotivoCancelacionDto) {
+    const fila = dto.codigo ? motivosActivos(lista).find((m) => m.codigo === dto.codigo) : null;
     if (dto.codigo && !fila) throw invalido(`Motivo desconocido: ${dto.codigo}`, 'codigo');
-    return { codigo: fila?.[0] ?? 'otro', texto: dto.motivo?.trim() || fila[1] };
+    return { codigo: fila?.codigo ?? 'otro', texto: dto.motivo?.trim() || fila!.texto };
   }
 
   async rechazar(usuario: Usuario, id: string, dto: MotivoCancelacionDto) {

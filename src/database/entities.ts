@@ -435,6 +435,25 @@ export class Liquidacion {
   @Column({ type: 'text', nullable: true }) referencia: string | null;
   @Column({ type: 'text', nullable: true }) nota: string | null;
   @Column('uuid') registradoPor: string;
+  /** Una liquidación mal capturada se anula (no se borra): se registra el movimiento contrario. */
+  @Column({ ...fecha, nullable: true }) anuladaEn: Date | null;
+  @Column({ type: 'text', nullable: true }) anuladaMotivo: string | null;
+  @Column({ type: 'uuid', nullable: true }) anuladaPor: string | null;
+  @CreateDateColumn(fecha) creadoEn: Date;
+}
+
+/** Historial de notificaciones generales que manda el equipo desde el panel. */
+@Entity('envios_push')
+export class EnvioPush {
+  @PrimaryGeneratedColumn('uuid') id: string;
+  @Column({ type: 'uuid', nullable: true }) actorId: string | null;
+  @Column({ type: 'text' }) destino: 'tema' | 'rol';
+  @Column({ type: 'text', nullable: true }) tema: string | null;
+  @Column({ type: 'text', nullable: true }) rol: string | null;
+  @Column() titulo: string;
+  @Column() cuerpo: string;
+  @Column({ type: 'int', nullable: true }) destinatarios: number | null;
+  @Column() modo: string;
   @CreateDateColumn(fecha) creadoEn: Date;
 }
 
@@ -481,6 +500,7 @@ export class Ticket {
   @Column() asunto: string;
   @Column() descripcion: string;
   @Column({ type: 'text', default: 'abierto' }) estado: 'abierto' | 'en_atencion' | 'resuelto' | 'cerrado';
+  @Column({ type: 'text', default: 'normal' }) prioridad: 'baja' | 'normal' | 'alta' | 'urgente';
   @Column({ type: 'uuid', nullable: true }) pedidoId: string | null;
   @Column('uuid') creadoPor: string;
   @Column({ type: 'uuid', nullable: true }) atendidoPor: string | null;
@@ -502,4 +522,4 @@ export class Mensaje {
 export const ENTIDADES = [
   Usuario, CodigoVerificacion, EventoCuenta, RefreshToken, Dispositivo, Direccion, Tienda, CategoriaProducto, Producto, Viaje, Pedido, PedidoItem,
   EventoPedido, Calificacion, Ticket, Mensaje, Vehiculo, Documento, HorarioTienda, GrupoOpciones, Opcion, Favorito, Cupon,
-  Notificacion, MensajePedido, Zona, Configuracion, Liquidacion, Movimiento, Suscripcion, AccionInterna, SolicitudTienda];
+  Notificacion, MensajePedido, Zona, Configuracion, Liquidacion, Movimiento, Suscripcion, AccionInterna, SolicitudTienda, EnvioPush];

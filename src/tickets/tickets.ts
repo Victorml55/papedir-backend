@@ -52,6 +52,7 @@ export class TicketsService {
       asunto: t.asunto,
       descripcion: t.descripcion,
       estado: t.estado,
+      prioridad: t.prioridad,
       pedidoId: t.pedidoId,
       creadoPor: { id: t.creadoPor, nombre: de(t.creadoPor)?.nombre, rol: de(t.creadoPor)?.rol },
       atendidoPor: t.atendidoPor ? { id: t.atendidoPor, nombre: de(t.atendidoPor)?.nombre } : null,
@@ -124,7 +125,7 @@ export class TicketsService {
   }
 
   /** Soporte: tomar el ticket y/o cambiar su estado. */
-  async atender(id: string, agente: Usuario, cambios: { estado?: string; asignarmelo?: boolean; atendidoPor?: string }) {
+  async atender(id: string, agente: Usuario, cambios: { estado?: string; asignarmelo?: boolean; atendidoPor?: string; asunto?: string; prioridad?: Ticket['prioridad'] }) {
     const t = await this.tickets.findOneBy({ id });
     if (!t) throw noEncontrado('Ticket no encontrado');
     if (cambios.atendidoPor) {
@@ -142,6 +143,8 @@ export class TicketsService {
       t.atendidoPor = agente.id;
       if (t.estado === 'abierto') t.estado = 'en_atencion';
     }
+    if (cambios.asunto?.trim()) t.asunto = cambios.asunto.trim();
+    if (cambios.prioridad) t.prioridad = cambios.prioridad;
     if (cambios.estado) {
       t.estado = cambios.estado as Ticket['estado'];
       t.resueltoEn = cambios.estado === 'resuelto' ? new Date() : null;

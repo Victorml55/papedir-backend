@@ -1,3 +1,4 @@
+import { CATALOGO } from '../config/catalogos';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcryptjs';
@@ -42,6 +43,9 @@ export class SoporteService {
     const qb = this.pedidos.createQueryBuilder('p').where('TRUE');
     const estados = this.pedidosSvc.estadosDe(q.estado);
     if (estados.length) qb.andWhere('p.estado IN (:...estados)', { estados });
+    if (q.clienteId) qb.andWhere('p.cliente_id = :c', { c: q.clienteId });
+    if (q.repartidorId) qb.andWhere('p.repartidor_id = :r', { r: q.repartidorId });
+    if (q.tiendaId) qb.andWhere('p.tienda_id = :ti', { ti: q.tiendaId });
     if (q.q?.trim()) {
       qb.andWhere(
         new Brackets((b) =>
@@ -191,7 +195,7 @@ export class SoporteService {
   async aprobar(agente: Usuario, id: string) {
     const u = await this.usuario(id);
     if (u.estado !== 'pendiente_aprobacion') throw conflicto('TRANSICION_INVALIDA', 'La cuenta no está pendiente de aprobación');
-    if (REGLAS.documentos.exigirParaAprobar && !(await this.documentos.completos(u))) {
+    if (CATALOGO.documentos.exigirParaAprobar && !(await this.documentos.completos(u))) {
       throw conflicto('DOCUMENTOS_INCOMPLETOS', 'Aprueba primero sus documentos obligatorios');
     }
     Object.assign(u, { estado: 'activo', motivoRechazo: null, rechazadaEn: null });
@@ -234,8 +238,13 @@ export class SoporteService {
   async crearInterno(admin: Usuario, dto: UsuarioInternoDto) {
     const email = dto.email.toLowerCase().trim();
     if (await this.usuarios.existsBy({ email })) throw conflicto('EMAIL_REGISTRADO', 'Ese correo ya está registrado');
+    const externo = dto.rol === 'cliente' || dto.rol === 'repartidor';
     const u = await this.usuarios.save(
-      this.usuarios.create({ nombre: dto.nombre.trim(), email, rol: dto.rol, estado: 'activo', passwordHash: await bcrypt.hash(dto.password, 10) }),
+      this.usuarios.create({
+        nombre: dto.nombre.trim(), email, rol: dto.rol, estado: 'activo', passwordHash: await bcrypt.hash(dto.password, 10),
+        // Las cuentas que crea admin nacen verificadas; los términos los aceptan al entrar por primera vez.
+        ...(externo ? { telefono: dto.telefono, emailVerificadoEn: new Date() } : {}),
+      }),
     );
     await this.bitacora.registrar(u.id, 'creada_por_admin', admin, `Rol ${dto.rol}`);
     return vistaUsuario(u);

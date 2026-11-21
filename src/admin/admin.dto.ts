@@ -1,3 +1,4 @@
+import { EsCategoria } from '../config/catalogos';
 import { Type } from 'class-transformer';
 import { IsBoolean, IsEmail, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from 'class-validator';
 import { CATEGORIAS_TIENDA } from '../auth/auth.dto';
@@ -30,7 +31,7 @@ export class CrearTiendaAdminDto {
   @ValidateIf((o) => !o.dueno) @IsUUID() duenoId?: string;
   @ValidateIf((o) => !o.duenoId) @ValidateNested() @Type(() => NuevoDuenoDto) dueno?: NuevoDuenoDto;
   @IsString() @IsNotEmpty() @MaxLength(80) nombre: string;
-  @IsIn(CATEGORIAS_TIENDA) categoria: string;
+  @EsCategoria() categoria: string;
   @IsOptional() @IsString() @MaxLength(300) descripcion?: string;
   @IsOptional() @IsString() @MaxLength(500) imagenUrl?: string;
   @IsOptional() @Matches(/^[0-9]{10}$/, { message: 'telefono debe tener 10 dígitos' }) telefono?: string;
