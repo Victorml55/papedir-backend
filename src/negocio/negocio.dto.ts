@@ -28,6 +28,13 @@ export class ComisionesDto {
   @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) @Max(50) envioPct: number;
 }
 
+export class CarteraConfigDto {
+  @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) @Max(100000) limiteDeudaTienda: number;
+  @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) @Max(100000) limiteDeudaRepartidor: number;
+  @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) @Max(100000) limiteDeudaCliente: number;
+  @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) @Max(1000) cargoCancelacion: number;
+}
+
 export class ComisionTiendaDto {
   /** null = usar la comisión general. */
   @IsOptional() @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) @Max(50) comisionPct: number | null;
@@ -90,7 +97,7 @@ export class LiquidacionDto {
 }
 
 export class SaldosDto {
-  @IsOptional() @IsIn(['tienda', 'repartidor']) rol?: 'tienda' | 'repartidor';
+  @IsOptional() @IsIn(['cliente', 'tienda', 'repartidor']) rol?: 'cliente' | 'tienda' | 'repartidor';
 }
 
 export class ListarLiquidacionesDto extends PaginaDto {

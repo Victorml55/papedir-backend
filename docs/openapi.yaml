@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: PaPedir API
-  version: 1.8.0
+  version: 1.9.0
   description: |
     Contrato de la API de PaPedir, plataforma de reparto a domicilio en Celaya, Gto.
 
@@ -666,6 +666,124 @@ paths:
                 items: { $ref: '#/components/schemas/MenuCategoria' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /tiendas/solicitudes:
+    get:
+      operationId: misSolicitudesTienda
+      tags: [Tiendas]
+      summary: Mis solicitudes de tienda nueva (rol tienda)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/SolicitudTienda' }
+    post:
+      operationId: solicitarTienda
+      tags: [Tiendas]
+      summary: Pedir otra tienda o sucursal (rol tienda)
+      description: |
+        Queda en revisión hasta que soporte o admin la aprueben; al aprobarla se crea la tienda cerrada.
+        Solo con la cuenta aprobada (`CUENTA_PENDIENTE`). Con `copiarMenuDe` se copiará el menú de otra sucursal propia.
+        Máximo 10 tiendas contando las solicitudes en revisión (`LIMITE_SUCURSALES`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SucursalInput' }
+      responses:
+        '202':
+          description: En revisión
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SolicitudTienda' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409':
+          description: CUENTA_PENDIENTE o LIMITE_SUCURSALES
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /tiendas/solicitudes/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    delete:
+      operationId: cancelarSolicitudTienda
+      tags: [Tiendas]
+      summary: Cancelar mi solicitud en revisión
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SolicitudTienda' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /soporte/solicitudes-tienda:
+    get:
+      operationId: listarSolicitudesTienda
+      tags: [Soporte]
+      summary: Solicitudes de tienda nueva (soporte y admin)
+      parameters:
+        - { name: estado, in: query, schema: { type: string, enum: [pendiente, aprobada, rechazada, cancelada] } }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/SolicitudTienda' }
+                  meta: { $ref: '#/components/schemas/PaginaMeta' }
+
+  /soporte/solicitudes-tienda/{id}/aprobar:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: aprobarSolicitudTienda
+      tags: [Soporte]
+      summary: Aprobar y crear la tienda
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SolicitudTienda' }
+        '409':
+          description: Ya revisada o el dueño no está activo
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /soporte/solicitudes-tienda/{id}/rechazar:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: rechazarSolicitudTienda
+      tags: [Soporte]
+      summary: Rechazar con motivo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [motivo]
+              properties:
+                motivo: { type: string, maxLength: 500 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SolicitudTienda' }
+
   /tiendas/mias:
     get:
       operationId: listarMisSucursales
@@ -684,22 +802,20 @@ paths:
                 items: { $ref: '#/components/schemas/Tienda' }
     post:
       operationId: crearSucursal
+      deprecated: true
       tags: [Tiendas]
-      summary: Agregar una sucursal (rol tienda)
-      description: |
-        Solo con la cuenta aprobada (`CUENTA_PENDIENTE`). Nace cerrada. Con `copiarMenuDe` copia categorías,
-        productos y opciones de otra sucursal propia (sin inventario). Máximo 10 sucursales (`LIMITE_SUCURSALES`).
+      summary: Alias de POST /tiendas/solicitudes
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/SucursalInput' }
       responses:
-        '201':
-          description: Creada
+        '202':
+          description: Solicitud creada
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Tienda' }
+              schema: { $ref: '#/components/schemas/SolicitudTienda' }
         '400': { $ref: '#/components/responses/ValidationError' }
         '409':
           description: Cuenta sin aprobar o límite de sucursales
@@ -2037,14 +2153,32 @@ paths:
                 type: array
                 items: { $ref: '#/components/schemas/Zona' }
 
+  /cartera:
+    get:
+      operationId: miCartera
+      tags: [Finanzas]
+      summary: Mi cartera (cliente, tienda o repartidor)
+      description: |
+        Como en DiDi. Saldo > 0: dinero a tu favor. Saldo < 0: lo que debes a PaPedir.
+        - Cliente: los reembolsos suman; cancelar en efectivo cuando la tienda ya aceptó resta. Se aplica sola en el siguiente pedido.
+        - Tienda y repartidor: las comisiones de lo cobrado en efectivo restan; lo cobrado con tarjeta suma. Se salda con una liquidación.
+        Con `bloqueado` = true la cuenta pasó su límite de deuda (`DEUDA_EXCEDIDA`).
+        `/saldo` es un alias.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EstadoDeCuenta' }
   /saldo:
     get:
       operationId: miSaldo
+      deprecated: true
       tags: [Finanzas]
-      summary: Mi saldo con PaPedir y sus movimientos (tienda y repartidor)
-      description: |
-        Saldo > 0: debes a PaPedir (comisiones). Saldo < 0: PaPedir te debe (cupones de PaPedir que cobraste de menos).
-        Se salda con una liquidación que registra admin.
+      summary: Alias de /cartera
       parameters:
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/Limit'
@@ -2297,17 +2431,55 @@ paths:
       operationId: soporteCancelarPedido
       tags: [Soporte]
       summary: Cancelar pedido en cualquier estado no final
+      description: Si usó saldo de la cartera, se le devuelve al cliente. Con tarjeta se reembolsa a la tarjeta salvo `reembolsoA = cartera`.
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/MotivoCancelacionRequest' }
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/MotivoCancelacionRequest'
+                - type: object
+                  properties:
+                    reembolsoA: { type: string, enum: [tarjeta, cartera], description: 'Pedido pagado con tarjeta: a dónde va el dinero (tarjeta por omisión)' }
+                    cobrarCargo: { type: boolean, description: 'Efectivo con la tienda ya preparando: cargar al cliente la tarifa de cancelación' }
       responses:
         '200':
           description: OK
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Pedido' }
+
+  /soporte/pedidos/{id}/reembolso:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: reembolsarACartera
+      tags: [Soporte]
+      summary: Reembolsar a la cartera del cliente (pedido entregado)
+      description: Parcial o total, por ejemplo si faltó un producto. Lo absorbe PaPedir. El tope es lo que pagó el cliente menos lo ya reembolsado.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [monto, motivo]
+              properties:
+                monto: { type: number, minimum: 1, example: 45 }
+                motivo: { type: string, maxLength: 300, example: Faltó una bebida }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409':
+          description: Pedido no entregado, sin cliente o REEMBOLSO_EXCEDIDO
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /soporte/pedidos/{id}/completar:
     parameters:
@@ -2541,6 +2713,35 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
 
+  /soporte/usuarios/{id}/rechazar:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: rechazarUsuario
+      tags: [Soporte]
+      summary: Regresar una solicitud de cuenta (tienda o repartidor) con el motivo
+      description: La cuenta sigue pendiente para que corrija; ve el motivo en `motivoRechazo` de /auth/me y le llega un push.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [motivo]
+              properties:
+                motivo: { type: string, maxLength: 500, example: La foto de la licencia está borrosa }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Usuario' }
+        '409':
+          description: La cuenta no está pendiente de aprobación
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /soporte/usuarios/{id}/aprobar:
     parameters:
       - $ref: '#/components/parameters/Id'
@@ -2736,6 +2937,24 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Comisiones' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /admin/configuracion/cartera:
+    put:
+      operationId: guardarCartera
+      tags: [Configuración]
+      summary: Límites de deuda y cargo por cancelación
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CarteraConfig' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CarteraConfig' }
         '400': { $ref: '#/components/responses/ValidationError' }
 
   /admin/configuracion/recargos:
@@ -2938,17 +3157,17 @@ paths:
       parameters:
         - name: rol
           in: query
-          schema: { type: string, enum: [tienda, repartidor] }
+          schema: { type: string, enum: [cliente, tienda, repartidor] }
       responses:
         '200':
           description: OK
           content:
             application/json:
-              schema: 
+              schema:
                 type: object
                 properties:
-                  totalPorCobrar: { type: number }
-                  totalPorPagar: { type: number }
+                  totalPorCobrar: { type: number, description: Suma de lo que deben (carteras negativas) }
+                  totalPorPagar: { type: number, description: Suma de los saldos a favor (carteras positivas) }
                   usuarios:
                     type: array
                     items:
@@ -2966,7 +3185,7 @@ paths:
     get:
       operationId: saldoDeUsuario
       tags: [Finanzas]
-      summary: Estado de cuenta de una tienda o repartidor
+      summary: Cartera de una cuenta (soporte y admin)
       parameters:
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/Limit'
@@ -3575,6 +3794,8 @@ components:
         puedeCambiarFoto:
           type: boolean
           description: Solo las cuentas de correo; las de Google o GitHub usan la foto del proveedor
+        motivoRechazo: { type: string, nullable: true, description: 'Cuenta pendiente que soporte regresó: qué debe corregir. Se limpia al aprobarla' }
+        rechazadaEn: { type: string, format: date-time, nullable: true }
         creadoEn: { type: string, format: date-time }
 
     UsuarioDetalle:
@@ -3777,6 +3998,38 @@ components:
           description: Una tienda pendiente de aprobación no puede abrir (409 CUENTA_PENDIENTE)
         tiempoPreparacionMin: { type: integer, minimum: 5, maximum: 120 }
 
+    SolicitudTienda:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        estado: { type: string, enum: [pendiente, aprobada, rechazada, cancelada] }
+        datos:
+          type: object
+          description: Lo que pidió el dueño (mismos campos que SucursalInput)
+          additionalProperties: true
+          properties:
+            nombre: { type: string }
+            categoria: { $ref: '#/components/schemas/CategoriaTienda' }
+            descripcion: { type: string, nullable: true }
+            imagenUrl: { type: string, nullable: true }
+            telefono: { type: string, nullable: true }
+            direccion: { type: string }
+            ubicacion: { $ref: '#/components/schemas/Coordenadas' }
+            tiempoPreparacionMin: { type: integer }
+        motivo: { type: string, nullable: true, description: Por qué se rechazó }
+        tiendaId: { type: string, format: uuid, nullable: true, description: La tienda creada al aprobarla }
+        revisadaEn: { type: string, format: date-time, nullable: true }
+        creadoEn: { type: string, format: date-time }
+        dueno:
+          type: object
+          nullable: true
+          description: Solo en el listado de soporte
+          properties:
+            id: { type: string, format: uuid }
+            nombre: { type: string }
+            email: { type: string }
+            telefono: { type: string, nullable: true }
+
     SucursalInput:
       type: object
       required: [nombre, categoria, direccion, ubicacion]
@@ -3788,6 +4041,7 @@ components:
         direccion: { type: string }
         ubicacion: { $ref: '#/components/schemas/Coordenadas' }
         tiempoPreparacionMin: { type: integer, minimum: 5, maximum: 120 }
+        imagenUrl: { type: string, maxLength: 500 }
         copiarMenuDe: { type: string, format: uuid, description: Id de otra sucursal propia }
 
     TiendaAdminInput:
@@ -4045,7 +4299,9 @@ components:
             codigo: { type: string }
             descripcion: { type: string, nullable: true }
         propina: { type: number, example: 20.0 }
-        total: { type: number, example: 206.0, description: subtotal + costoEnvio + propina − descuento }
+        saldoAplicado: { type: number, example: 0, description: Saldo a favor de la cartera que se descontó solo }
+        deudaCobrada: { type: number, example: 0, description: Adeudo anterior del cliente que se sumó al total }
+        total: { type: number, example: 206.0, description: subtotal + costoEnvio + propina − descuento − saldoAplicado + deudaCobrada }
         metodoPago: { $ref: '#/components/schemas/MetodoPago' }
         programadoPara: { type: string, format: date-time, nullable: true }
         tiempoEstimadoMin:
@@ -4186,6 +4442,8 @@ components:
           items: { $ref: '#/components/schemas/Recargo' }
         propina: { type: number, example: 0 }
         descuento: { type: number, example: 0 }
+        saldoAplicado: { type: number, example: 0, description: Saldo de la cartera del cliente usado en el pedido }
+        deudaCobrada: { type: number, example: 0, description: Adeudo anterior del cliente cobrado en el pedido }
         total: { type: number, example: 216.0 }
         distanciaKm: { type: number, example: 4.42 }
         metodoPago: { $ref: '#/components/schemas/MetodoPago' }
@@ -4207,6 +4465,13 @@ components:
         grupoId: { type: string, format: uuid, nullable: true, description: Pedidos del mismo carrito de varias tiendas }
         programadoPara: { type: string, format: date-time, nullable: true }
         motivoCancelacion: { type: string, nullable: true, description: Código del catálogo si se canceló o rechazó }
+        cancelacion:
+          type: object
+          nullable: true
+          description: Solo para el cliente. Si puede cancelar ahora y cuánto le costaría (cancelación tardía en efectivo)
+          properties:
+            permitida: { type: boolean }
+            cargo: { type: number, example: 25 }
         codigoEntrega:
           type: string
           nullable: true
@@ -4819,6 +5084,16 @@ components:
       properties:
         comisiones: { $ref: '#/components/schemas/Comisiones' }
         recargos: { $ref: '#/components/schemas/Recargos' }
+        cartera: { $ref: '#/components/schemas/CarteraConfig' }
+
+    CarteraConfig:
+      type: object
+      required: [limiteDeudaTienda, limiteDeudaRepartidor, limiteDeudaCliente, cargoCancelacion]
+      properties:
+        limiteDeudaTienda: { type: number, example: 1500, description: Con más deuda no puede abrir ni aceptar pedidos }
+        limiteDeudaRepartidor: { type: number, example: 500, description: Con más deuda no puede conectarse ni tomar pedidos }
+        limiteDeudaCliente: { type: number, example: 150, description: Con más deuda solo puede pagar con tarjeta }
+        cargoCancelacion: { type: number, example: 25, description: Al cliente que cancela en efectivo cuando la tienda ya aceptó; se le abona a la tienda }
 
     CuponInput:
       type: object
@@ -4863,11 +5138,13 @@ components:
         id: { type: string, format: uuid }
         tipo:
           type: string
-          enum: [comision_tienda, comision_envio, descuento_plataforma, liquidacion, venta_tarjeta, envio_tarjeta]
+          enum: [comision_tienda, comision_envio, descuento_plataforma, liquidacion, venta_tarjeta, envio_tarjeta, pago_con_saldo, reverso_saldo, saldo_cliente, pago_deuda, deuda_cobrada, reembolso, cargo_cancelacion, compensacion_cancelacion, ajuste]
           description: |
-            venta_tarjeta / envio_tarjeta: pedido pagado con tarjeta; PaPedir le debe a la tienda su venta
-            y al repartidor su envío y propina
-        monto: { type: number, description: '> 0 aumenta lo que debes a PaPedir; < 0 lo disminuye' }
+            venta_tarjeta / envio_tarjeta: pedido con tarjeta; PaPedir le paga a la tienda su venta y al repartidor su envío y propina.
+            pago_con_saldo / pago_deuda: el cliente usó su saldo o pagó su adeudo en un pedido; reverso_saldo lo deshace si no se entregó.
+            saldo_cliente / deuda_cobrada: en efectivo el repartidor cobró de menos (saldo del cliente) o de más (adeudo del cliente).
+            reembolso: soporte devolvió dinero a la cartera. cargo_cancelacion / compensacion_cancelacion: cancelación tardía en efectivo.
+        monto: { type: number, description: '> 0 a tu favor; < 0 lo que debes' }
         descripcion: { type: string, example: Comisión 10% del pedido R-000123 }
         pedidoId: { type: string, format: uuid, nullable: true }
         tiendaId: { type: string, format: uuid, nullable: true }
@@ -4877,12 +5154,10 @@ components:
     EstadoDeCuenta:
       type: object
       properties:
-        saldo: { type: number, example: 152.3 }
-        aFavorDe:
-          type: string
-          nullable: true
-          enum: [plataforma, usuario, null]
-          description: plataforma = debes a PaPedir; usuario = PaPedir te debe
+        saldo: { type: number, example: -152.3, description: '> 0 a tu favor; < 0 lo que debes' }
+        estado: { type: string, enum: [a_favor, debe, en_cero] }
+        limiteDeuda: { type: number, nullable: true, description: Deuda máxima permitida para tu rol }
+        bloqueado: { type: boolean, description: Pasaste el límite de deuda }
         movimientos:
           type: object
           properties:

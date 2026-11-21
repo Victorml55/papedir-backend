@@ -42,6 +42,9 @@ export const vistaUsuario = (u: Usuario) => ({
   proveedor: u.proveedor ?? 'local',
   /** Solo las cuentas de correo pueden cambiar su foto; las de Google o GitHub usan la del proveedor. */
   puedeCambiarFoto: fotoEditable(u),
+  /** Solicitud de cuenta (tienda o repartidor) que soporte regresó: qué debe corregir. Se limpia al aprobarla. */
+  motivoRechazo: u.motivoRechazo ?? null,
+  rechazadaEn: u.rechazadaEn ?? null,
   creadoEn: u.creadoEn,
 });
 

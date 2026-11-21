@@ -11,9 +11,11 @@ import { DocumentosService } from '../documentos/documentos';
 import { BitacoraCuentasService } from '../nucleo/bitacora-cuentas.service';
 import { PushService } from '../nucleo/push.service';
 import { RealtimeService } from '../nucleo/realtime.service';
-import { MotivoCancelacionDto } from '../pedidos/pedidos.dto';
 import { PedidosService, vistaVehiculo } from '../pedidos/pedidos.service';
-import { BuscarPedidosDto, BuscarUsuariosDto, CorregirUbicacionDto, MetricasDto, UsuarioInternoDto } from './soporte.dto';
+import { BuscarPedidosDto, BuscarUsuariosDto, CancelarSoporteDto, CorregirUbicacionDto, MetricasDto, ReembolsoCarteraDto, UsuarioInternoDto } from './soporte.dto';
+import { FinanzasService } from '../finanzas/finanzas.service';
+import { folio, redondear } from '../common/util';
+import { EventoPedido } from '../database/entities';
 
 const NO_FINALES: EstadoPedido[] = ['programado', 'creado', 'aceptado_tienda', 'listo_para_recoger', 'asignado', 'en_tienda', 'en_camino', 'en_domicilio'];
 
@@ -31,6 +33,7 @@ export class SoporteService {
     @InjectRepository(Pedido) private readonly pedidos: Repository<Pedido>,
     @InjectRepository(Usuario) private readonly usuarios: Repository<Usuario>,
     @InjectRepository(Tienda) private readonly tiendas: Repository<Tienda>,
+    private readonly finanzas: FinanzasService,
   ) {}
 
   // ─────────────────────────── pedidos
@@ -53,12 +56,49 @@ export class SoporteService {
     return pagina(await this.pedidosSvc.vistas(filas, agente), total, q);
   }
 
-  async cancelar(agente: Usuario, id: string, dto: MotivoCancelacionDto) {
+  async cancelar(agente: Usuario, id: string, dto: CancelarSoporteDto) {
     const m = this.pedidosSvc.motivo('soporte', dto);
     const p = await this.pedidosSvc.transicionar(id, {
       desde: NO_FINALES, hacia: 'cancelado', evento: 'cancelado', actor: agente, detalle: m.texto, cambios: () => ({ motivoCodigo: m.codigo }),
+      reembolsoA: dto.reembolsoA,
+      reglas: dto.cobrarCargo ? (x, em) => this.pedidosSvc.cobrarCancelacion(x, em) : undefined,
     });
     return this.pedidosSvc.vista(p, agente);
+  }
+
+  /**
+   * Devuelve dinero a la cartera del cliente por un pedido entregado (faltó algo, llegó mal...).
+   * Lo absorbe PaPedir; el tope es lo que el cliente pagó por el pedido menos lo ya reembolsado.
+   */
+  async reembolsarACartera(agente: Usuario, id: string, dto: ReembolsoCarteraDto) {
+    const p = await this.pedidos.findOneBy({ id });
+    if (!p) throw noEncontrado('Pedido no encontrado');
+    if (!p.clienteId) throw conflicto('SIN_CLIENTE', 'Es un pedido capturado por la tienda; no tiene cliente con cartera');
+    if (p.estado !== 'entregado') throw conflicto('TRANSICION_INVALIDA', 'Solo se reembolsan pedidos entregados; para otros, cancélalo');
+    await this.ds.transaction(async (m) => {
+      await m.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [p.id]);
+      const [{ previo }] = await m.query(`SELECT coalesce(sum(monto), 0)::float8 AS previo FROM movimientos WHERE pedido_id = $1 AND tipo = 'reembolso' AND usuario_id = $2`, [p.id, p.clienteId]);
+      const tope = redondear(p.total + p.saldoAplicado - p.deudaCobrada - previo);
+      if (dto.monto > tope) throw conflicto('REEMBOLSO_EXCEDIDO', tope > 0 ? `Lo máximo que puedes reembolsar de este pedido es $${tope}` : 'Este pedido ya se reembolsó completo');
+      // Un pedido admite un solo movimiento de cada tipo: los reembolsos siguientes se suman al primero.
+      if (previo) await m.query(`UPDATE movimientos SET monto = monto + $3, descripcion = $4 WHERE pedido_id = $1 AND tipo = 'reembolso' AND usuario_id = $2`, [p.id, p.clienteId, dto.monto, `Reembolsos del pedido ${folio('R', p.folioNum)}`]);
+      else await this.finanzas.abonar(m, [{ usuarioId: p.clienteId, pedidoId: p.id, tipo: 'reembolso', monto: dto.monto, descripcion: `Reembolso del pedido ${folio('R', p.folioNum)}: ${dto.motivo}` }]);
+      await m.insert(EventoPedido, { pedidoId: p.id, tipo: 'reembolsado', usuarioId: agente.id, rol: agente.rol, detalle: `$${dto.monto} a la cartera: ${dto.motivo}` });
+    });
+    void this.push.aUsuarios([p.clienteId], 'Te reembolsamos', `$${dto.monto} del pedido ${folio('R', p.folioNum)} ya están en tu cartera; se descuentan solos en tu siguiente pedido`, { pedidoId: p.id });
+    return this.pedidosSvc.vista(await this.pedidos.findOneByOrFail({ id }), agente);
+  }
+
+  /** La solicitud no procede tal como está: la cuenta sigue pendiente y el usuario ve el motivo para corregir. */
+  async rechazarCuenta(agente: Usuario, id: string, motivo: string) {
+    const u = await this.usuario(id);
+    if (u.estado !== 'pendiente_aprobacion') throw conflicto('TRANSICION_INVALIDA', 'La cuenta no está pendiente de aprobación');
+    Object.assign(u, { motivoRechazo: motivo.trim(), rechazadaEn: new Date() });
+    await this.usuarios.save(u);
+    await this.bitacora.registrar(u.id, 'solicitud_rechazada', agente, motivo);
+    this.rt.emitir([`usuario:${u.id}`], 'cuenta:rechazada', { motivo });
+    void this.push.aUsuarios([u.id], 'Tu solicitud necesita cambios', motivo);
+    return vistaUsuario(u);
   }
 
   /** Por ejemplo: la ubicación estaba mal capturada pero el pedido sí se entregó. */
@@ -154,7 +194,7 @@ export class SoporteService {
     if (REGLAS.documentos.exigirParaAprobar && !(await this.documentos.completos(u))) {
       throw conflicto('DOCUMENTOS_INCOMPLETOS', 'Aprueba primero sus documentos obligatorios');
     }
-    u.estado = 'activo';
+    Object.assign(u, { estado: 'activo', motivoRechazo: null, rechazadaEn: null });
     await this.usuarios.save(u);
     await this.bitacora.registrar(u.id, 'aprobada', agente);
     this.rt.emitir([`usuario:${u.id}`], 'cuenta:aprobada', {});

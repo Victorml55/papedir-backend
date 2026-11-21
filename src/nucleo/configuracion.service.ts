@@ -10,11 +10,13 @@ export type Recargos = {
   lluvia: { activo: boolean; monto: number };
   demanda: { activo: boolean; pedidosEsperando: number; monto: number };
 };
-type Valores = { comisiones: Comisiones; recargos: Recargos };
+export type Cartera = { limiteDeudaTienda: number; limiteDeudaRepartidor: number; limiteDeudaCliente: number; cargoCancelacion: number };
+type Valores = { comisiones: Comisiones; recargos: Recargos; cartera: Cartera };
 
 const DEFAULTS: Valores = {
   comisiones: { ...REGLAS.comisiones },
   recargos: JSON.parse(JSON.stringify(REGLAS.recargos)),
+  cartera: { ...REGLAS.cartera },
 };
 
 /**

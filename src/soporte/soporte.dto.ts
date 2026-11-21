@@ -2,6 +2,25 @@ import { Type } from 'class-transformer';
 import { IsBoolean, IsEmail, IsIn, IsISO8601, IsNotEmpty, IsOptional, IsString, IsUUID, MaxLength, MinLength, ValidateNested } from 'class-validator';
 import { CoordenadasDto, PaginaDto } from '../common/dtos';
 import { ESTADOS_TICKET } from '../tickets/tickets';
+import { MotivoCancelacionDto } from '../pedidos/pedidos.dto';
+import { IsNumber, Max, Min } from 'class-validator';
+
+export class CancelarSoporteDto extends MotivoCancelacionDto {
+  /** Pedido pagado con tarjeta: devolver el dinero a la tarjeta (por omisión) o a la cartera del cliente. */
+  @IsOptional() @IsIn(['tarjeta', 'cartera']) reembolsoA?: 'tarjeta' | 'cartera';
+  /** Pedido en efectivo que la tienda ya preparaba: cargar al cliente la tarifa de cancelación. */
+  @IsOptional() @IsBoolean() cobrarCargo?: boolean;
+}
+
+/** Reembolso parcial o total a la cartera del cliente, por ejemplo si faltó un producto. */
+export class ReembolsoCarteraDto {
+  @IsNumber({ maxDecimalPlaces: 2 }) @Min(1) @Max(100000) monto: number;
+  @IsString() @IsNotEmpty() @MaxLength(300) motivo: string;
+}
+
+export class RechazarCuentaDto {
+  @IsString() @IsNotEmpty() @MaxLength(500) motivo: string;
+}
 
 export class BuscarPedidosDto extends PaginaDto {
   @IsOptional() @IsString() estado?: string;
