@@ -40,7 +40,14 @@ export class RepartidorService {
     return vistaVehiculo(await this.vehiculos.findOneBy({ repartidorId: rep.id }));
   }
 
-  async guardarVehiculo(rep: Usuario, dto: VehiculoDto) {
+  /**
+   * El repartidor registra su vehículo al darse de alta. Ya aprobado, cambiarlo (sobre todo las placas)
+   * lo hace soporte desde el panel, porque está ligado a sus documentos.
+   */
+  async guardarVehiculo(rep: Usuario, dto: VehiculoDto, porSoporte = false) {
+    if (!porSoporte && rep.estado === 'activo' && (await this.vehiculos.existsBy({ repartidorId: rep.id }))) {
+      throw conflicto('VEHICULO_BLOQUEADO', 'Para cambiar tu vehículo o tus placas abre un ticket con soporte');
+    }
     await this.vehiculos.save({
       repartidorId: rep.id, tipo: dto.tipo, marca: dto.marca?.trim() || null, modelo: dto.modelo?.trim() || null,
       color: dto.color.trim(), placa: dto.tipo === 'bicicleta' ? null : dto.placa.toUpperCase(),
@@ -106,6 +113,9 @@ export class RepartidorService {
   async cambiarDisponibilidad(rep: Usuario, disponible: boolean) {
     if (disponible && rep.estado !== 'activo') {
       throw conflicto('CUENTA_PENDIENTE', 'Tu cuenta está en revisión; podrás conectarte cuando soporte la apruebe');
+    }
+    if (disponible && !(await this.vehiculos.existsBy({ repartidorId: rep.id }))) {
+      throw conflicto('SIN_VEHICULO', 'Registra tu vehículo en tu perfil antes de conectarte');
     }
     if (disponible) await this.finanzas.exigirDeudaPermitida(rep, 'conectarte');
     if (!disponible && (await this.viajes.existsBy({ repartidorId: rep.id, estado: 'activo' }))) {

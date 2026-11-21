@@ -187,7 +187,7 @@ export class ControlService implements OnModuleInit {
 
   async guardarVehiculo(repartidorId: string, dto: VehiculoDto) {
     const rep = await this.usuario(repartidorId, 'repartidor');
-    return this.repartidores.guardarVehiculo(rep, dto);
+    return this.repartidores.guardarVehiculo(rep, dto, true);
   }
 
   async subirDocumento(agente: Usuario, usuarioId: string, dto: DocumentoAdminDto, archivo: Express.Multer.File) {
