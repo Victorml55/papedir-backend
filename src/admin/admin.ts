@@ -9,7 +9,7 @@ import { MetricasDto } from '../soporte/soporte.dto';
 import { TiendasModule } from '../tiendas/tiendas.module';
 import {
   BitacoraDto, EditarUsuarioDto, EliminarUsuarioDto, ListaRepartidoresDto, ListaResenasDto, ListaTiendasDto, ModerarResenaDto,
-  NotificacionDto, PasswordAdminDto, PausaTiendaDto,
+  NotificacionDto, PasswordAdminDto, PausaTiendaDto, CrearTiendaAdminDto, EditarTiendaAdminDto, EliminarTiendaDto,
 } from './admin.dto';
 import { AdminService } from './admin.service';
 
@@ -53,6 +53,18 @@ export class PanelAdminController {
   @Delete('usuarios/:id') @HttpCode(204)
   eliminar(@Actor() u: Usuario, @Param('id', UuidPipe) id: string, @Body() dto: EliminarUsuarioDto) { return this.svc.eliminarUsuario(u, id, dto.motivo); }
 
+  @Post('tiendas')
+  crearTienda(@Actor() u: Usuario, @Body() dto: CrearTiendaAdminDto) { return this.svc.crearTienda(u, dto); }
+
+  @Patch('tiendas/:id')
+  editarTienda(@Actor() u: Usuario, @Param('id', UuidPipe) id: string, @Body() dto: EditarTiendaAdminDto) { return this.svc.editarTienda(u, id, dto); }
+
+  @Delete('tiendas/:id') @HttpCode(204)
+  eliminarTienda(@Actor() u: Usuario, @Param('id', UuidPipe) id: string, @Body() dto: EliminarTiendaDto) { return this.svc.eliminarTienda(u, id, dto.motivo); }
+
+  @Post('tiendas/:id/restaurar') @HttpCode(200)
+  restaurarTienda(@Actor() u: Usuario, @Param('id', UuidPipe) id: string) { return this.svc.restaurarTienda(u, id); }
+
   @Get('metricas/series') series(@Query() q: MetricasDto) { return this.svc.series(q); }
 
   @Post('notificaciones') @HttpCode(200)
@@ -82,6 +94,10 @@ const ACCIONES: [RegExp, string][] = [
   [/^POST \/admin\/usuarios$/, 'Creó una cuenta del equipo'],
   [/^PATCH \/admin\/usuarios\/:id$/, 'Editó los datos de una cuenta'],
   [/^PUT \/admin\/usuarios\/:id\/password$/, 'Puso una contraseña temporal'],
+  [/^POST \/admin\/tiendas$/, 'Dio de alta una tienda'],
+  [/^PATCH \/admin\/tiendas\/:id$/, 'Editó los datos de una tienda'],
+  [/^DELETE \/admin\/tiendas\/:id$/, 'Dio de baja una tienda'],
+  [/^POST \/admin\/tiendas\/:id\/restaurar$/, 'Restauró una tienda'],
   [/^DELETE \/admin\/usuarios\/:id$/, 'Eliminó una cuenta'],
   [/^POST \/admin\/notificaciones$/, 'Envió una notificación general'],
   [/^POST \/admin\/liquidaciones$/, 'Registró un pago'],

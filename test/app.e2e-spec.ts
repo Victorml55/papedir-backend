@@ -1428,6 +1428,53 @@ describe('PaPedir API', () => {
       expect(JSON.stringify(historial)).toContain('tienda_pausada');
     });
 
+    it('admin da de alta, edita, da de baja y restaura una tienda', async () => {
+      const nueva = {
+        dueno: { nombre: 'Doña Lupe', email: 'lupe@prueba.test', telefono: '4611234567', password: 'Temporal123' },
+        nombre: 'Gorditas Lupe', categoria: 'comida', direccion: 'Av. Tecnológico 100, Celaya', ubicacion: mover(TIENDA, 0.003),
+      };
+      await api('post', '/admin/tiendas', 'soporte', nueva).expect(403);
+      await api('post', '/admin/tiendas', 'admin', { ...nueva, dueno: undefined }).expect(400);
+      const ficha = (await api('post', '/admin/tiendas', 'admin', nueva).expect(201)).body;
+      expect(ficha).toMatchObject({ nombre: 'Gorditas Lupe', abierta: false, eliminadaEn: null, dueno: { email: 'lupe@prueba.test', rol: 'tienda', estado: 'activo' } });
+      await api('post', '/admin/tiendas', 'admin', nueva).expect(409); // el correo ya existe
+      // El dueño entra con la contraseña temporal y ve su tienda.
+      const sesion = (await api('post', '/auth/login', undefined, { email: 'lupe@prueba.test', password: 'Temporal123', app: 'tienda' }).expect(200)).body;
+      const mia = await request(app.getHttpServer()).get('/api/v1/tiendas/mia').set('Authorization', `Bearer ${sesion.accessToken}`).expect(200);
+      expect(mia.body.id).toBe(ficha.id);
+
+      // Sucursal para un dueño existente.
+      const sucursal = (await api('post', '/admin/tiendas', 'admin', { ...nueva, dueno: undefined, duenoId: ficha.dueno.id, nombre: 'Gorditas Lupe Norte' }).expect(201)).body;
+      expect(sucursal.dueno.id).toBe(ficha.dueno.id);
+      await api('post', '/admin/tiendas', 'admin', { ...nueva, dueno: undefined, duenoId: id.cliente }).expect(400); // no es cuenta de tienda
+
+      const editada = (await api('patch', `/admin/tiendas/${ficha.id}`, 'admin', { nombre: 'Gorditas Doña Lupe', tiempoPreparacionMin: 15, abierta: true }).expect(200)).body;
+      expect(editada).toMatchObject({ nombre: 'Gorditas Doña Lupe', tiempoPreparacionMin: 15, abierta: true });
+      expect((await api('get', `/tiendas/${ficha.id}`, 'cliente').expect(200)).body.nombre).toBe('Gorditas Doña Lupe');
+
+      await api('delete', `/admin/tiendas/${ficha.id}`, 'admin', {}).expect(400); // sin motivo
+      await api('delete', `/admin/tiendas/${ficha.id}`, 'admin', { motivo: 'Cerró el negocio' }).expect(204);
+      await api('get', `/tiendas/${ficha.id}`, 'cliente').expect(404);
+      await api('patch', `/admin/tiendas/${ficha.id}`, 'admin', { nombre: 'X' }).expect(409);
+      const activas = (await api('get', '/soporte/tiendas?q=Gorditas', 'soporte')).body.data.map((t) => t.id);
+      expect(activas).toEqual([sucursal.id]);
+      const bajas = (await api('get', '/soporte/tiendas?q=Gorditas&eliminadas=si', 'soporte')).body.data;
+      expect(bajas).toEqual([expect.objectContaining({ id: ficha.id, eliminadaMotivo: 'Cerró el negocio' })]);
+      expect((await api('get', `/soporte/tiendas/${ficha.id}`, 'soporte').expect(200)).body.eliminadaEn).toEqual(expect.any(String));
+
+      const restaurada = (await api('post', `/admin/tiendas/${ficha.id}/restaurar`, 'admin').expect(200)).body;
+      expect(restaurada).toMatchObject({ eliminadaEn: null, abierta: false });
+      await api('get', `/tiendas/${ficha.id}`, 'cliente').expect(200);
+      await api('post', `/admin/tiendas/${ficha.id}/restaurar`, 'admin').expect(409);
+    });
+
+    it('no da de baja una tienda con pedidos en curso', async () => {
+      const p = await manual(mover(TIENDA, 0.002));
+      const r = await api('delete', `/admin/tiendas/${id.tiendaId}`, 'admin', { motivo: 'Prueba' }).expect(409);
+      expect(r.body.error).toBe('TIENE_PEDIDOS_ACTIVOS');
+      expect(p.id).toBeDefined();
+    });
+
     it('lista repartidores con conexión y vehículo, y arma el mapa de despacho', async () => {
       await api('put', '/repartidor/ubicacion', 'rep1', CERCA_DE_TIENDA).expect(204);
       await api('patch', '/repartidor/disponibilidad', 'rep1', { disponible: true }).expect(200);
