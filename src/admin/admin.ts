@@ -1,6 +1,6 @@
 import { Body, CallHandler, Controller, Delete, ExecutionContext, Get, HttpCode, Injectable, Logger, Module, NestInterceptor, Param, Patch, Post, Put, Query } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
-import { Observable, tap } from 'rxjs';
+import { concatMap, Observable } from 'rxjs';
 import { AuthModule } from '../auth/auth.module';
 import { Actor, Roles } from '../common/auth';
 import { UuidPipe } from '../common/util';
@@ -167,11 +167,13 @@ export class BitacoraInterceptor implements NestInterceptor {
     const patron = String(req.route?.path ?? req.path).replace(/^\/api\/v1/, '');
     if (/^\/(auth|usuarios\/me)/.test(patron)) return next.handle();
 
+    // Se espera a guardar la acción antes de responder: así quien consulte la bitácora justo después
+    // (el panel o las pruebas) ya la ve. Si falla, solo se avisa en el log y la respuesta sale igual.
     return next.handle().pipe(
-      tap(() => {
+      concatMap((valor) => {
         const clave = `${req.method} ${patron}`;
         const id = req.params?.id ?? req.params?.pedidoId;
-        void this.svc
+        return this.svc
           .registrarAccion({
             actorId: u.id,
             actorRol: u.rol,
@@ -182,7 +184,8 @@ export class BitacoraInterceptor implements NestInterceptor {
             detalle: resumir(req.body),
             estadoHttp: ctx.switchToHttp().getResponse()?.statusCode ?? 200,
           })
-          .catch((e) => this.log.warn(`No se guardó la acción: ${e.message}`));
+          .catch((e) => this.log.warn(`No se guardó la acción: ${e.message}`))
+          .then(() => valor);
       }),
     );
   }
