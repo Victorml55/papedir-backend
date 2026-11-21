@@ -207,9 +207,20 @@ Con la misma cuenta de servicio, la API ya valida el login de las apps (`POST /a
    Storage pide el plan Blaze (de pago por uso) en proyectos nuevos; con el uso del proyecto queda dentro de la capa gratuita, pero conviene poner una **alerta de presupuesto** de $1 USD en Google Cloud.
 4. **Messaging:** las campañas a temas (`novedades`, `promociones`, `tiendas`, `repartidores`) se mandan desde **Messaging → Nueva campaña → Notificaciones → Tema**.
 
-### 5. Resend (correos con códigos)
+### 5. Correos con códigos (Brevo o Resend)
 
-La API manda por correo los códigos para verificar el correo y para recuperar la contraseña. Sin configurar, la API funciona igual y los códigos solo aparecen en el log de Render.
+La API manda por correo los códigos para verificar el correo y para recuperar la contraseña. Sin configurar, la API funciona igual y los códigos solo aparecen en el log de Render. Hay dos proveedores; si están los dos, se usa Brevo.
+
+**Brevo (sin dominio propio, le llega a cualquiera):**
+
+1. Crea una cuenta en [brevo.com](https://www.brevo.com) (plan gratis: 300 correos al día).
+2. **Senders, domains & dedicated IPs → Senders → Add a sender** con tu correo (por ejemplo Gmail) y confírmalo desde el correo que te mandan.
+3. **SMTP & API → API keys → Generate a new API key**.
+4. En Render agrega `BREVO_API_KEY` y `CORREO_REMITENTE` = `PaPedir <ese-correo@gmail.com>`, y revisa con `npm run verificar`.
+
+Con un remitente de Gmail algunos correos pueden caer en spam; con un dominio propio verificado en Brevo eso se corrige.
+
+**Resend (necesita dominio para enviar a cualquiera):**
 
 1. Crea una cuenta en [resend.com](https://resend.com) y en **API Keys** genera una llave con permiso *Sending access*.
 2. En Render agrega `RESEND_API_KEY` con esa llave y revisa con `npm run verificar`.
