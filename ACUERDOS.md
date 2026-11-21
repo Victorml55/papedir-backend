@@ -126,7 +126,7 @@ El mock acepta cualquier token y devuelve los ejemplos del contrato (montos y co
 
 El mock **no guarda estado ni tiene Socket.IO**: sirve para construir pantallas. Los flujos entre apps y el tiempo real se prueban con el backend real desde la semana 5.
 
-**Versión vigente del contrato: 1.11.0** (`info.version` de `docs/openapi.yaml`). Las apps deben trabajar con esa misma copia en `papedir-frontend/docs/openapi.yaml`; si su rama tiene una versión anterior, la actualizan desde `main` antes de programar algo nuevo.
+**Versión vigente del contrato: 1.11.1** (`info.version` de `docs/openapi.yaml`). Las apps deben trabajar con esa misma copia en `papedir-frontend/docs/openapi.yaml`; si su rama tiene una versión anterior, la actualizan desde `main` antes de programar algo nuevo.
 
 ### Cómo se cambia el contrato
 
@@ -302,6 +302,8 @@ Aplica a direcciones del cliente, la tienda (registro, edición, solicitud de su
 **Ajustes manuales:** soporte también abona o carga a mano (`POST /soporte/usuarios/{id}/ajuste`) hasta `cartera.ajusteMaxSoporte` por movimiento (por omisión $500); admin no tiene tope. Las sanciones (pausar tienda, banear cuenta) ya las puede hacer soporte.
 
 **Apps:** la cartera puede mostrar los tipos nuevos `compensacion_repartidor` y `resolucion` con su `descripcion`; no hay que cambiar nada más. El repartidor recibe la notificación "Pedido cancelado: no pierdes".
+
+**Vehículo del repartidor (1.11.1):** lo registra él mismo al darse de alta (en revisión, o la primera vez si un admin lo creó ya aprobado). En bicicleta no lleva placa. Ya aprobado y con vehículo, `PUT /repartidor/vehiculo` responde 409 `VEHICULO_BLOQUEADO` y la app lo muestra de solo lectura con "abre un ticket con soporte"; soporte lo cambia desde el panel. Sin vehículo no puede conectarse (409 `SIN_VEHICULO`): la app debe llevarlo a registrarlo.
 
 ### Estados del pedido
 

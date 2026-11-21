@@ -240,6 +240,13 @@ describe('PaPedir API', () => {
         await api('put', '/repartidor/ubicacion', r, CERCA_DE_TIENDA).expect(204);
       }
       expect((await api('post', `/repartidor/pedidos/${id.pedido}/tomar`, 'rep1').expect(409)).body.error).toBe('REPARTIDOR_DESCONECTADO');
+      // Sin vehículo no se conecta; la primera vez lo registra él mismo (placa obligatoria salvo en bicicleta)
+      expect((await api('patch', '/repartidor/disponibilidad', 'rep1', { disponible: true }).expect(409)).body.error).toBe('SIN_VEHICULO');
+      await api('get', '/repartidor/vehiculo', 'rep1').expect(204);
+      await api('put', '/repartidor/vehiculo', 'rep1', { tipo: 'moto', color: 'Rojo' }).expect(400);
+      const v = await api('put', '/repartidor/vehiculo', 'rep1', { tipo: 'moto', marca: 'Italika', color: 'Rojo', placa: 'gto-123' }).expect(200);
+      expect(v.body).toEqual({ tipo: 'moto', marca: 'Italika', modelo: null, color: 'Rojo', placa: 'GTO-123' });
+      expect((await api('put', '/repartidor/vehiculo', 'rep2', { tipo: 'bicicleta', color: 'Azul', placa: 'X' }).expect(200)).body.placa).toBeNull();
       for (const r of ['rep1', 'rep2']) await api('patch', '/repartidor/disponibilidad', r, { disponible: true }).expect(200);
     });
 
@@ -621,13 +628,13 @@ describe('PaPedir API', () => {
       request(http).post('/api/v1/documentos').set('Authorization', `Bearer ${tok[quien]}`).field('tipo', tipo)
         .attach('archivo', png, { filename: 'doc', contentType });
 
-    it('registra su vehículo; la placa es obligatoria salvo en bicicleta', async () => {
-      await api('get', '/repartidor/vehiculo', id.ganador).expect(204);
-      await api('put', '/repartidor/vehiculo', id.ganador, { tipo: 'moto', color: 'Rojo' }).expect(400);
-      expect((await api('put', '/repartidor/vehiculo', id.otro, { tipo: 'bicicleta', color: 'Azul' }).expect(200)).body.placa).toBeNull();
-      const v = await api('put', '/repartidor/vehiculo', id.ganador, { tipo: 'moto', marca: 'Italika', color: 'Rojo', placa: 'gto-123' }).expect(200);
-      expect(v.body).toEqual({ tipo: 'moto', marca: 'Italika', modelo: null, color: 'Rojo', placa: 'GTO-123' });
+    it('ya aprobado, el vehículo lo cambia soporte, no el repartidor', async () => {
+      expect((await api('put', '/repartidor/vehiculo', 'rep1', { tipo: 'auto', color: 'Gris', placa: 'ABC1234' }).expect(409)).body.error).toBe('VEHICULO_BLOQUEADO');
+      await api('put', `/soporte/usuarios/${id.rep1}/vehiculo`, 'soporte', { tipo: 'moto', marca: 'Italika', color: 'Negro', placa: 'GTO-124' }).expect(200);
+      expect((await api('get', '/repartidor/vehiculo', 'rep1').expect(200)).body).toMatchObject({ color: 'Negro', placa: 'GTO-124' });
       await api('get', '/repartidor/vehiculo', 'cliente').expect(403);
+      // el que entregó el pedido de prueba queda con moto para las pruebas siguientes
+      await api('put', `/soporte/usuarios/${id[id.ganador]}/vehiculo`, 'soporte', { tipo: 'moto', marca: 'Italika', color: 'Rojo', placa: 'gto-123' }).expect(200);
     });
 
     it('el cliente ve vehículo, foto y calificación de su repartidor', async () => {
@@ -1941,6 +1948,7 @@ describe('PaPedir API', () => {
     });
   });
   describe('Resolver cancelaciones', () => {
+    let compensacion = 0;
     const saldo = async (quien: string) => (await api('get', '/cartera', quien).expect(200)).body.saldo;
     const enCamino = async () => {
       const carrito = { clienteId: id.clientePanel, tiendaId: id.tiendaId, direccionId: id.dirPanel, items: [{ productoId: id.pastor, cantidad: 1, opciones: [id.verde] }] };
@@ -1964,30 +1972,30 @@ describe('PaPedir API', () => {
       const eventos = (await api('get', `/pedidos/${p.id}/eventos`, 'soporte')).body.map((x) => x.tipo);
       expect(eventos).toContain('repartidor_compensado');
       id.cancelado = p.id;
-      id.compensacion = esperado as any;
+      compensacion = esperado;
     });
 
     it('sugiere compensaciones según la culpa y se resuelve una sola vez', async () => {
       const r = (await api('get', `/soporte/pedidos/${id.cancelado}/resolucion`, 'soporte').expect(200)).body;
       expect(r.resolucion).toBeNull();
-      expect(r.compensacionRepartidor).toBe(id.compensacion);
+      expect(r.compensacionRepartidor).toBe(compensacion);
       expect(r.participantes.map((x) => x.rol)).toEqual(['cliente', 'tienda', 'repartidor']);
       // culpa del cliente: se le carga lo que se le pagó al repartidor
-      expect(r.sugerencias.cliente).toEqual([expect.objectContaining({ rol: 'cliente', monto: -id.compensacion })]);
+      expect(r.sugerencias.cliente).toEqual([expect.objectContaining({ rol: 'cliente', monto: -compensacion })]);
       // culpa del repartidor: se revierte su compensación y el cliente recibe disculpa
-      expect(r.sugerencias.repartidor.map((x) => [x.rol, x.monto])).toEqual([['cliente', 30], ['repartidor', -id.compensacion]]);
+      expect(r.sugerencias.repartidor.map((x) => [x.rol, x.monto])).toEqual([['cliente', 30], ['repartidor', -compensacion]]);
 
       const clienteAntes = await saldo('clientePanel');
       const rep = r.participantes.find((x) => x.rol === 'repartidor');
       const body = {
         culpable: 'cliente', nota: 'No contestó en 10 minutos', acuerdo: 'Aceptó pagar la mitad',
-        acciones: [{ usuarioId: id.clientePanel, monto: -Math.round(id.compensacion / 2), concepto: 'Mitad del pedido que no recibió' }],
+        acciones: [{ usuarioId: id.clientePanel, monto: -Math.round(compensacion / 2), concepto: 'Mitad del pedido que no recibió' }],
       };
       // solo participantes del pedido
       await api('post', `/soporte/pedidos/${id.cancelado}/resolucion`, 'soporte', { ...body, acciones: [{ usuarioId: id.soporte, monto: 10, concepto: 'x' }] }).expect(400);
       const hecho = (await api('post', `/soporte/pedidos/${id.cancelado}/resolucion`, 'soporte', body).expect(200)).body;
       expect(hecho.resolucion).toMatchObject({ culpable: 'cliente', acuerdo: 'Aceptó pagar la mitad', acciones: [expect.objectContaining({ rol: 'cliente' })] });
-      expect(await saldo('clientePanel')).toBeCloseTo(clienteAntes - Math.round(id.compensacion / 2), 2);
+      expect(await saldo('clientePanel')).toBeCloseTo(clienteAntes - Math.round(compensacion / 2), 2);
       expect(rep).toBeTruthy();
       expect((await api('post', `/soporte/pedidos/${id.cancelado}/resolucion`, 'soporte', body).expect(409)).body.error).toBe('YA_RESUELTO');
       const ficha = (await api('get', `/soporte/usuarios/${id.clientePanel}`, 'soporte').expect(200)).body;

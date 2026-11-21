@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: PaPedir API
-  version: 1.11.0
+  version: 1.11.1
   description: |
     Contrato de la API de PaPedir, plataforma de reparto a domicilio en Celaya, Gto.
 
@@ -1687,8 +1687,11 @@ paths:
     put:
       operationId: guardarMiVehiculo
       tags: [Repartidor]
-      summary: Registrar o cambiar mi vehículo
-      description: El cliente lo ve en su pedido para reconocer al repartidor. La placa es obligatoria salvo en bicicleta.
+      summary: Registrar mi vehículo (al darme de alta)
+      description: |
+        El cliente lo ve en su pedido para reconocer al repartidor. La placa es obligatoria salvo en bicicleta (en bicicleta se ignora).
+        El repartidor lo registra mientras su cuenta está en revisión, o la primera vez si ya está aprobado. Después de eso,
+        cambiarlo responde 409 `VEHICULO_BLOQUEADO`: lo cambia soporte desde el panel (`PUT /soporte/usuarios/{id}/vehiculo`).
       requestBody:
         required: true
         content:
@@ -1701,6 +1704,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Vehiculo' }
         '400': { $ref: '#/components/responses/ValidationError' }
+        '409': { description: '`VEHICULO_BLOQUEADO`: ya tiene vehículo y su cuenta está aprobada; lo cambia soporte' }
 
   /repartidor/ganancias:
     get:
@@ -1736,7 +1740,7 @@ paths:
               required: [disponible]
               properties:
                 disponible: { type: boolean }
-      description: No se puede desconectar con un viaje activo, ni conectar con la cuenta pendiente de aprobación.
+      description: No se puede desconectar con un viaje activo, ni conectar con la cuenta pendiente de aprobación (`CUENTA_PENDIENTE`) o sin vehículo registrado (`SIN_VEHICULO`).
       responses:
         '200':
           description: OK
