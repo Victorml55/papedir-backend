@@ -405,7 +405,30 @@ export class RepartidorService {
     return this.pedidosSvc.vista(p, rep);
   }
 
-  historial(rep: Usuario, q: PaginaDto) {
-    return this.pedidosSvc.listar(rep, q, true);
+  /**
+   * Pedidos del repartidor ya terminados, más un resumen de toda su vida en la app para el encabezado
+   * (la app no debe sumar solo la página que tiene cargada).
+   */
+  async historial(rep: Usuario, q: PaginaDto) {
+    const [lista, [r]] = await Promise.all([
+      this.pedidosSvc.listar(rep, q, true),
+      this.ds.query(
+        `SELECT count(*)::int AS entregas,
+                coalesce(sum(costo_envio), 0)::float8 AS envio, coalesce(sum(propina), 0)::float8 AS propinas,
+                coalesce(sum(comision_envio), 0)::float8 AS comision,
+                coalesce(sum(descuento) FILTER (WHERE descuento_absorbe = 'plataforma' AND metodo_pago = 'efectivo'), 0)::float8 AS reembolso
+         FROM pedidos WHERE repartidor_id = $1 AND estado = 'entregado'`,
+        [rep.id],
+      ),
+    ]);
+    return {
+      ...lista,
+      resumen: {
+        entregas: r.entregas,
+        propinas: redondear(r.propinas),
+        // Igual que gananciaNeta de /repartidor/ganancias: envío + propinas − comisión + cupones de PaPedir.
+        gananciaNeta: redondear(r.envio + r.propinas - r.comision + r.reembolso),
+      },
+    };
   }
 }

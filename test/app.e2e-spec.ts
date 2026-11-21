@@ -316,7 +316,13 @@ describe('PaPedir API', () => {
       expect((await entregar().expect(409)).body.error).toBe('CODIGO_INCORRECTO');
       expect((await entregar(id.codigo).expect(200)).body.estado).toBe('entregado');
       await api('get', '/repartidor/viaje-actual', id.ganador).expect(204);
-      expect((await api('get', '/repartidor/historial', id.ganador)).body.meta.total).toBe(1);
+      const h = (await api('get', '/repartidor/historial', id.ganador).expect(200)).body;
+      expect(h.meta.total).toBe(1);
+      // Pedido terminado: teléfonos ocultos (el contrato los marca nullable) y resumen de toda la vida
+      expect(h.data[0].tienda.telefono).toBeNull();
+      expect(h.data[0].destino.telefono).toBeNull();
+      const g = (await api('get', '/repartidor/ganancias', id.ganador).expect(200)).body.resumen;
+      expect(h.resumen).toEqual({ entregas: 1, propinas: g.propinas, gananciaNeta: g.gananciaNeta });
     });
 
     it('la bitácora registra cada paso con quién lo hizo', async () => {

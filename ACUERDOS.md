@@ -126,7 +126,7 @@ El mock acepta cualquier token y devuelve los ejemplos del contrato (montos y co
 
 El mock **no guarda estado ni tiene Socket.IO**: sirve para construir pantallas. Los flujos entre apps y el tiempo real se prueban con el backend real desde la semana 5.
 
-**Versión vigente del contrato: 1.10.1** (`info.version` de `docs/openapi.yaml`). Las apps deben trabajar con esa misma copia en `papedir-frontend/docs/openapi.yaml`; si su rama tiene una versión anterior, la actualizan desde `main` antes de programar algo nuevo.
+**Versión vigente del contrato: 1.10.2** (`info.version` de `docs/openapi.yaml`). Las apps deben trabajar con esa misma copia en `papedir-frontend/docs/openapi.yaml`; si su rama tiene una versión anterior, la actualizan desde `main` antes de programar algo nuevo.
 
 ### Cómo se cambia el contrato
 
@@ -285,6 +285,10 @@ Aplica a direcciones del cliente, la tienda (registro, edición, solicitud de su
 **Catálogos:** `GET /catalogos` (público) trae las categorías de tienda, los motivos de cancelación, los documentos por rol y la versión de términos vigentes. Admin los edita en la web, así que las apps **no** deben tener esas listas fijas en el código: las leen de aquí (por ejemplo, el selector de categoría del registro de tienda y la lista de documentos del repartidor). `CategoriaTienda` y `TipoDocumento` ya no son enums cerrados en el contrato.
 
 **Límites que las apps deben respetar en sus formularios (1.10.1):** teléfonos de 10 dígitos exactos (solo números, lada incluida); todo `motivo` hasta 500 caracteres; propina hasta $500 (crear y editar); precios con hasta 2 decimales (no limitar el campo a pasos de 0.5); nombre de categoría de menú hasta 40; búsquedas (`q`) hasta 60. Validar en el formulario evita que el usuario se entere hasta que el backend responde 400.
+
+**Campos que pueden venir en `null` (1.10.2):** los teléfonos de un pedido (`tienda.telefono`, `destino.telefono`, `repartidor.telefono`) se ocultan cuando el pedido terminó o quien consulta no debe verlos, y `Tienda.telefono` puede faltar en sucursales. En los modelos de las apps van como `String?`; si el botón de llamar no tiene número, se ofrece el chat o soporte. Regla general: todo campo `nullable: true` del contrato se declara opcional en el modelo, y el `catch` que rodea a una petición atrapa cualquier error (no solo `DioException`), porque un fallo al leer el JSON deja la pantalla cargando sin avisar.
+
+**Historial del repartidor:** `GET /repartidor/historial` trae `resumen` (`entregas`, `propinas`, `gananciaNeta`) de toda su vida en la app; el encabezado usa eso y no la suma de la página cargada.
 
 ### Estados del pedido
 
