@@ -1,11 +1,10 @@
-import { MotivoCancelacionDto } from '../pedidos/pedidos.dto';
 import { Body, Controller, Get, HttpCode, Param, Patch, Post, Query } from '@nestjs/common';
 import { Actor, Roles } from '../common/auth';
 import { MotivoDto } from '../common/dtos';
 import { UuidPipe } from '../common/util';
 import { Usuario } from '../database/entities';
 import { TicketsService } from '../tickets/tickets';
-import { AtenderTicketDto, BuscarPedidosDto, BuscarUsuariosDto, CorregirUbicacionDto, MetricasDto, UsuarioInternoDto } from './soporte.dto';
+import { AtenderTicketDto, BuscarPedidosDto, BuscarUsuariosDto, CorregirUbicacionDto, MetricasDto, UsuarioInternoDto, CancelarSoporteDto, ReembolsoCarteraDto, RechazarCuentaDto } from './soporte.dto';
 import { SoporteService } from './soporte.service';
 
 @Roles('soporte', 'admin')
@@ -17,7 +16,10 @@ export class SoporteController {
   pedidos(@Actor() u: Usuario, @Query() q: BuscarPedidosDto) { return this.svc.buscarPedidos(u, q); }
 
   @Post('pedidos/:id/cancelar') @HttpCode(200)
-  cancelar(@Actor() u: Usuario, @Param('id', UuidPipe) id: string, @Body() dto: MotivoCancelacionDto) { return this.svc.cancelar(u, id, dto); }
+  cancelar(@Actor() u: Usuario, @Param('id', UuidPipe) id: string, @Body() dto: CancelarSoporteDto) { return this.svc.cancelar(u, id, dto); }
+
+  @Post('pedidos/:id/reembolso') @HttpCode(200)
+  reembolso(@Actor() u: Usuario, @Param('id', UuidPipe) id: string, @Body() dto: ReembolsoCarteraDto) { return this.svc.reembolsarACartera(u, id, dto); }
 
   @Post('pedidos/:id/completar') @HttpCode(200)
   completar(@Actor() u: Usuario, @Param('id', UuidPipe) id: string, @Body() dto: MotivoDto) { return this.svc.completar(u, id, dto.motivo); }
@@ -45,6 +47,9 @@ export class SoporteController {
 
   @Post('usuarios/:id/aprobar') @HttpCode(200)
   aprobar(@Actor() u: Usuario, @Param('id', UuidPipe) id: string) { return this.svc.aprobar(u, id); }
+
+  @Post('usuarios/:id/rechazar') @HttpCode(200)
+  rechazar(@Actor() u: Usuario, @Param('id', UuidPipe) id: string, @Body() dto: RechazarCuentaDto) { return this.svc.rechazarCuenta(u, id, dto.motivo); }
 
   @Post('usuarios/:id/banear') @HttpCode(200)
   banear(@Actor() u: Usuario, @Param('id', UuidPipe) id: string, @Body() dto: MotivoDto) { return this.svc.banear(u, id, dto.motivo); }

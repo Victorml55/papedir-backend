@@ -285,10 +285,22 @@ async function firebase() {
 }
 
 async function correo() {
-  seccion('Correo (Resend)');
+  seccion('Correo (Brevo o Resend)');
+  const brevo = process.env.BREVO_API_KEY;
+  if (brevo) {
+    const r = await fetch('https://api.brevo.com/v3/senders', { headers: { 'api-key': brevo, Accept: 'application/json' } }).catch((e) => e as Error);
+    if (r instanceof Error) return falla(`No se pudo contactar a Brevo: ${r.message}`);
+    if (r.status === 401) return falla('Brevo rechazó BREVO_API_KEY');
+    if (!r.ok) return falla(`Brevo respondió ${r.status}`);
+    const remitente = (process.env.CORREO_REMITENTE ?? '').match(/<([^>]+)>/)?.[1] ?? process.env.CORREO_REMITENTE ?? '';
+    const activos = ((await r.json()).senders ?? []).filter((x: any) => x.active).map((x: any) => String(x.email).toLowerCase());
+    if (!remitente) return falla('Falta CORREO_REMITENTE, por ejemplo "PaPedir <tu-correo@gmail.com>"');
+    if (!activos.includes(remitente.toLowerCase())) return falla(`El remitente ${remitente} no está verificado en Brevo (Senders)`);
+    return ok(`Brevo listo; remitente verificado: ${remitente}`);
+  }
   const llave = process.env.RESEND_API_KEY;
   if (!llave) {
-    return aviso('Sin RESEND_API_KEY: los códigos de verificación y de recuperar contraseña solo se escriben en el log');
+    return aviso('Sin BREVO_API_KEY ni RESEND_API_KEY: los códigos de verificación y de recuperar contraseña solo se escriben en el log');
   }
   const r = await fetch('https://api.resend.com/domains', { headers: { Authorization: `Bearer ${llave}` } }).catch((e) => e as Error);
   if (r instanceof Error) return falla(`No se pudo contactar a Resend: ${r.message}`);

@@ -1,6 +1,7 @@
+import { documentosDe, EsTipoDocumento, nombreDocumento } from '../config/catalogos';
 import { Body, Controller, Get, HttpCode, Injectable, Module, Param, Post, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsBoolean, IsIn, IsNotEmpty, IsString, MaxLength, ValidateIf } from 'class-validator';
+import { IsBoolean, IsNotEmpty, IsString, MaxLength, ValidateIf } from 'class-validator';
 import { randomUUID } from 'crypto';
 import { Repository } from 'typeorm';
 import { Actor, Roles } from '../common/auth';
@@ -14,25 +15,19 @@ import { PushService } from '../nucleo/push.service';
 import { EXT, subidaArchivo } from '../uploads/uploads';
 
 const D = REGLAS.documentos;
-const TODOS = [...new Set([...D.tipos.repartidor, ...D.tipos.tienda])];
-
-const NOMBRES: Record<string, string> = {
-  ine: 'INE', licencia: 'Licencia de manejo', tarjeta_circulacion: 'Tarjeta de circulación',
-  comprobante_domicilio: 'Comprobante de domicilio', constancia_fiscal: 'Constancia de situación fiscal',
-};
 
 export class DocumentoDto {
-  @IsIn(TODOS) tipo: string;
+  @EsTipoDocumento() tipo: string;
 }
 
 export class RevisionDto {
   @IsBoolean() aprobado: boolean;
   /** Obligatorio al rechazar: el usuario lo ve para saber qué corregir. */
-  @ValidateIf((o) => o.aprobado === false) @IsString() @IsNotEmpty() @MaxLength(300) motivo?: string;
+  @ValidateIf((o) => o.aprobado === false) @IsString() @IsNotEmpty() @MaxLength(500) motivo?: string;
 }
 
 export const vistaDocumento = (d: Documento) => ({
-  id: d.id, tipo: d.tipo, nombre: NOMBRES[d.tipo] ?? d.tipo, estado: d.estado, motivo: d.motivo,
+  id: d.id, tipo: d.tipo, nombre: nombreDocumento(d.tipo), estado: d.estado, motivo: d.motivo,
   creadoEn: d.creadoEn, revisadoEn: d.revisadoEn,
 });
 
@@ -48,7 +43,7 @@ export class DocumentosService {
 
   /** Sube o reemplaza un documento. Uno por tipo; al reemplazarlo vuelve a quedar pendiente de revisión. */
   async subir(u: Usuario, tipo: string, archivo: Express.Multer.File) {
-    const permitidos: readonly string[] = D.tipos[u.rol as 'repartidor' | 'tienda'] ?? [];
+    const permitidos = documentosDe(u.rol).map((d) => d.tipo);
     if (!permitidos.includes(tipo)) throw invalido(`Tu cuenta no usa el documento "${tipo}"`, 'tipo');
     if (!archivo) throw invalido('Falta el archivo', 'archivo');
     if (!D.mimes.includes(archivo.mimetype as any)) throw invalido('Solo se aceptan JPG, PNG, WebP o PDF', 'archivo');
@@ -66,12 +61,12 @@ export class DocumentosService {
   }
 
   async mios(u: Usuario) {
-    const tipos: readonly string[] = D.tipos[u.rol as 'repartidor' | 'tienda'] ?? [];
-    const requeridos: readonly string[] = D.requeridos[u.rol as 'repartidor' | 'tienda'] ?? [];
+    const tipos = documentosDe(u.rol).map((d) => d.tipo);
+    const requeridos = documentosDe(u.rol).filter((d) => d.obligatorio).map((d) => d.tipo);
     const subidos = await this.docs.findBy({ usuarioId: u.id });
     return tipos.map((tipo) => {
       const d = subidos.find((x) => x.tipo === tipo);
-      return { tipo, nombre: NOMBRES[tipo], requerido: requeridos.includes(tipo), documento: d ? vistaDocumento(d) : null };
+      return { tipo, nombre: nombreDocumento(tipo), requerido: requeridos.includes(tipo), documento: d ? vistaDocumento(d) : null };
     });
   }
 
@@ -99,7 +94,7 @@ export class DocumentosService {
       revisadoPor: agente.id, revisadoEn: new Date(),
     });
     await this.docs.save(d);
-    const nombre = NOMBRES[d.tipo] ?? d.tipo;
+    const nombre = nombreDocumento(d.tipo);
     await this.bitacora.registrar(d.usuarioId, dto.aprobado ? 'documento_aprobado' : 'documento_rechazado', agente, `${nombre}${d.motivo ? `: ${d.motivo}` : ''}`);
     void this.push.aUsuarios(
       [d.usuarioId], dto.aprobado ? 'Documento aprobado' : 'Revisa tu documento',
@@ -110,7 +105,7 @@ export class DocumentosService {
 
   /** ¿Tiene aprobados todos los documentos requeridos para su rol? */
   async completos(u: Pick<Usuario, 'id' | 'rol'>) {
-    const requeridos: readonly string[] = D.requeridos[u.rol as 'repartidor' | 'tienda'] ?? [];
+    const requeridos = documentosDe(u.rol).filter((d) => d.obligatorio).map((d) => d.tipo);
     if (!requeridos.length) return true;
     const aprobados = await this.docs.findBy({ usuarioId: u.id, estado: 'aprobado' });
     return requeridos.every((t) => aprobados.some((d) => d.tipo === t));

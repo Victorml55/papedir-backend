@@ -1,8 +1,10 @@
+import { FinanzasService } from '../finanzas/finanzas.service';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, Not, Repository } from 'typeorm';
 import { PaginaDto, RangoFechasDto, rangoFechas } from '../common/dtos';
-import { conflicto, noEncontrado, sinPermiso } from '../common/errores';
+import { conflicto, invalido, noEncontrado, sinPermiso } from '../common/errores';
+import { PushService } from '../nucleo/push.service';
 import { metrosEntre, redondear } from '../common/util';
 import { ESTADOS_CON_REPARTIDOR, EstadoPedido, REGLAS } from '../config/reglas';
 import { EventoPedido, Pedido, Tienda, Usuario, Vehiculo, Viaje } from '../database/entities';
@@ -28,6 +30,8 @@ export class RepartidorService {
     @InjectRepository(Tienda) private readonly tiendas: Repository<Tienda>,
     @InjectRepository(Vehiculo) private readonly vehiculos: Repository<Vehiculo>,
     private readonly rutas: RutasService,
+    private readonly finanzas: FinanzasService,
+    private readonly push: PushService,
   ) {}
 
   // ─────────────────────────── vehículo y ganancias
@@ -36,7 +40,14 @@ export class RepartidorService {
     return vistaVehiculo(await this.vehiculos.findOneBy({ repartidorId: rep.id }));
   }
 
-  async guardarVehiculo(rep: Usuario, dto: VehiculoDto) {
+  /**
+   * El repartidor registra su vehículo al darse de alta. Ya aprobado, cambiarlo (sobre todo las placas)
+   * lo hace soporte desde el panel, porque está ligado a sus documentos.
+   */
+  async guardarVehiculo(rep: Usuario, dto: VehiculoDto, porSoporte = false) {
+    if (!porSoporte && rep.estado === 'activo' && (await this.vehiculos.existsBy({ repartidorId: rep.id }))) {
+      throw conflicto('VEHICULO_BLOQUEADO', 'Para cambiar tu vehículo o tus placas abre un ticket con soporte');
+    }
     await this.vehiculos.save({
       repartidorId: rep.id, tipo: dto.tipo, marca: dto.marca?.trim() || null, modelo: dto.modelo?.trim() || null,
       color: dto.color.trim(), placa: dto.tipo === 'bicicleta' ? null : dto.placa.toUpperCase(),
@@ -103,6 +114,10 @@ export class RepartidorService {
     if (disponible && rep.estado !== 'activo') {
       throw conflicto('CUENTA_PENDIENTE', 'Tu cuenta está en revisión; podrás conectarte cuando soporte la apruebe');
     }
+    if (disponible && !(await this.vehiculos.existsBy({ repartidorId: rep.id }))) {
+      throw conflicto('SIN_VEHICULO', 'Registra tu vehículo en tu perfil antes de conectarte');
+    }
+    if (disponible) await this.finanzas.exigirDeudaPermitida(rep, 'conectarte');
     if (!disponible && (await this.viajes.existsBy({ repartidorId: rep.id, estado: 'activo' }))) {
       throw conflicto('VIAJE_ACTIVO', 'Termina tu viaje antes de desconectarte');
     }
@@ -186,7 +201,51 @@ export class RepartidorService {
    * Tomar un pedido es atómico: se bloquea al repartidor (para no pasar de 4 pedidos con dos
    * peticiones simultáneas) y luego el pedido (si dos repartidores lo intentan, solo uno gana).
    */
+  /**
+   * Soporte le asigna un pedido listo a un repartidor concreto (conectado y aprobado). No revisa distancia ni
+   * encadenamiento: soporte decide. Respeta el máximo de pedidos por viaje.
+   */
+  async asignarPorSoporte(agente: Usuario, pedidoId: string, repartidorId: string, motivo: string) {
+    const pedido = await this.ds.transaction(async (m) => {
+      const rep = await m.findOne(Usuario, { where: { id: repartidorId }, lock: { mode: 'pessimistic_write' } });
+      if (!rep || rep.rol !== 'repartidor') throw invalido('Elige una cuenta de repartidor', 'repartidorId');
+      if (rep.estado !== 'activo') throw conflicto('CUENTA_PENDIENTE', `La cuenta de ${rep.nombre} no está activa`);
+      if (!rep.disponible) throw conflicto('REPARTIDOR_DESCONECTADO', `${rep.nombre} no está conectado`);
+      let viaje = await this.viajeActivo(m, rep.id);
+      if (viaje && (await this.pedidosDelViaje(m, viaje.id)).length >= R.maxPedidosPorViaje) {
+        throw conflicto('VIAJE_LLENO', `${rep.nombre} ya lleva ${R.maxPedidosPorViaje} pedidos en su viaje`);
+      }
+      const p = await m.findOne(Pedido, { where: { id: pedidoId }, lock: { mode: 'pessimistic_write' } });
+      if (!p) throw noEncontrado('Pedido no encontrado');
+      if (p.estado !== 'listo_para_recoger') throw conflicto('TRANSICION_INVALIDA', 'Solo se asignan pedidos listos para recoger; si ya tiene repartidor, libéralo primero');
+      if (!viaje) viaje = await m.save(m.create(Viaje, { repartidorId: rep.id }));
+      Object.assign(p, { estado: 'asignado', repartidorId: rep.id, viajeId: viaje.id });
+      await m.save(p);
+      await m.insert(EventoPedido, { pedidoId: p.id, tipo: 'asignado_por_soporte', usuarioId: agente.id, rol: agente.rol, detalle: `A ${rep.nombre}: ${motivo}` });
+      return m.findOneByOrFail(Pedido, { id: p.id });
+    });
+    void this.pedidosSvc.notificar(pedido);
+    void this.push.aUsuarios([repartidorId], 'Soporte te asignó un pedido', 'Revisa tu viaje en la app', { pedidoId });
+    return pedido;
+  }
+
+  /** Soporte lo desconecta (por ejemplo, se le olvidó desconectarse). Con viaje activo, primero hay que liberar sus pedidos. */
+  async desconectarPorSoporte(agente: Usuario, repartidorId: string, motivo: string) {
+    const rep = await this.usuarios.findOneBy({ id: repartidorId, rol: 'repartidor' });
+    if (!rep) throw noEncontrado('Repartidor no encontrado');
+    if (!rep.disponible) throw conflicto('TRANSICION_INVALIDA', `${rep.nombre} ya está desconectado`);
+    if (await this.viajes.existsBy({ repartidorId, estado: 'activo' })) {
+      throw conflicto('VIAJE_ACTIVO', `${rep.nombre} tiene un viaje en curso; libera o completa sus pedidos primero`);
+    }
+    await this.usuarios.update(repartidorId, { disponible: false });
+    this.rt.emitir([`usuario:${repartidorId}`], 'repartidor:desconectado', { motivo });
+    this.rt.emitir(['soporte'], 'mapa:repartidor', { repartidorId, desconectado: true });
+    void this.push.aUsuarios([repartidorId], 'Soporte te desconectó', motivo);
+    return { disponible: false, porAgente: agente.id };
+  }
+
   async tomar(rep: Usuario, pedidoId: string) {
+    await this.finanzas.exigirDeudaPermitida(rep, 'tomar pedidos');
     const pedido = await this.ds.transaction(async (m) => {
       const yo = await m.findOne(Usuario, { where: { id: rep.id }, lock: { mode: 'pessimistic_write' } });
       if (yo.estado !== 'activo') throw conflicto('CUENTA_PENDIENTE', 'Tu cuenta está en revisión');
@@ -356,7 +415,30 @@ export class RepartidorService {
     return this.pedidosSvc.vista(p, rep);
   }
 
-  historial(rep: Usuario, q: PaginaDto) {
-    return this.pedidosSvc.listar(rep, q, true);
+  /**
+   * Pedidos del repartidor ya terminados, más un resumen de toda su vida en la app para el encabezado
+   * (la app no debe sumar solo la página que tiene cargada).
+   */
+  async historial(rep: Usuario, q: PaginaDto) {
+    const [lista, [r]] = await Promise.all([
+      this.pedidosSvc.listar(rep, q, true),
+      this.ds.query(
+        `SELECT count(*)::int AS entregas,
+                coalesce(sum(costo_envio), 0)::float8 AS envio, coalesce(sum(propina), 0)::float8 AS propinas,
+                coalesce(sum(comision_envio), 0)::float8 AS comision,
+                coalesce(sum(descuento) FILTER (WHERE descuento_absorbe = 'plataforma' AND metodo_pago = 'efectivo'), 0)::float8 AS reembolso
+         FROM pedidos WHERE repartidor_id = $1 AND estado = 'entregado'`,
+        [rep.id],
+      ),
+    ]);
+    return {
+      ...lista,
+      resumen: {
+        entregas: r.entregas,
+        propinas: redondear(r.propinas),
+        // Igual que gananciaNeta de /repartidor/ganancias: envío + propinas − comisión + cupones de PaPedir.
+        gananciaNeta: redondear(r.envio + r.propinas - r.comision + r.reembolso),
+      },
+    };
   }
 }

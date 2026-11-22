@@ -7,7 +7,7 @@ import { Actor, Publico, Roles } from '../common/auth';
 import { pagina, PaginaDto } from '../common/dtos';
 import { invalido, noEncontrado } from '../common/errores';
 import { redondear, UuidPipe } from '../common/util';
-import { MOTIVOS } from '../config/reglas';
+import { ListaMotivos, motivosActivos } from '../config/catalogos';
 import { Favorito, Notificacion, Producto, Tienda, Usuario } from '../database/entities';
 import { TiendasModule } from '../tiendas/tiendas.module';
 import { TiendasService, vistaProducto, vistaTienda } from '../tiendas/tiendas.service';
@@ -38,7 +38,7 @@ export class ClienteService {
 
   async misFavoritos(cliente: Usuario) {
     const favs = await this.favoritos.find({ where: { clienteId: cliente.id }, order: { creadoEn: 'DESC' } });
-    const ts = await this.tiendas.findBy({ id: In(favs.map((f) => f.tiendaId)) });
+    const ts = await this.tiendas.findBy({ id: In(favs.map((f) => f.tiendaId)), eliminadaEn: IsNull() });
     const abiertas = await this.tiendasSvc.abiertasAhora(ts.map((t) => t.id));
     return favs.map((f) => ts.find((t) => t.id === f.tiendaId)).filter(Boolean).map((t) => vistaTienda(t, null, abiertas.get(t.id)));
   }
@@ -136,7 +136,8 @@ export class ClienteController {
   /** Motivos para cancelar o rechazar, por rol. Las apps los muestran como opciones. */
   @Publico() @Get('catalogos/motivos-cancelacion')
   motivos() {
-    return { cliente: motivos(MOTIVOS.cliente), tienda: motivos(MOTIVOS.tienda), soporte: motivos(MOTIVOS.soporte) };
+    const lista = (l: ListaMotivos) => motivosActivos(l).map((m) => ({ codigo: m.codigo, texto: m.texto }));
+    return { cliente: lista('cliente'), tienda: lista('tienda'), soporte: lista('soporte') };
   }
 }
 

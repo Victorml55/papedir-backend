@@ -16,3 +16,7 @@ export function metrosEntre(a: { lat: number; lng: number }, b: { lat: number; l
   const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(h));
 }
+
+/** Fecha y hora legibles en la zona de Celaya, p. ej. "sáb 22 nov, 12:00 a.m.". Para textos de bitácora y avisos. */
+export const fechaLegible = (d: Date) =>
+  d.toLocaleString('es-MX', { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', timeZone: 'America/Mexico_City' });

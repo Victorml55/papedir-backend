@@ -5,7 +5,8 @@ import { Actor, Roles, TiendaSel } from '../common/auth';
 import { pagina, PaginaDto, RangoFechasDto, rangoFechas } from '../common/dtos';
 import { conflicto, invalido, noEncontrado } from '../common/errores';
 import { redondear, UuidPipe } from '../common/util';
-import { MOTIVOS, REGLAS } from '../config/reglas';
+import { REGLAS } from '../config/reglas';
+import { textoMotivo } from '../config/catalogos';
 import { vistaCupon } from '../cupones/cupones.service';
 import { Cupon, Liquidacion, Movimiento, Tienda, Usuario, Zona } from '../database/entities';
 import { FinanzasService } from '../finanzas/finanzas.service';
@@ -14,7 +15,7 @@ import { PushService } from '../nucleo/push.service';
 import { TiendasModule } from '../tiendas/tiendas.module';
 import { TiendasService } from '../tiendas/tiendas.service';
 import {
-  ComisionesDto, ComisionTiendaDto, CuponDto, CuponUpdateDto, LiquidacionDto, ListarLiquidacionesDto, RecargosDto, SaldosDto, ZonaDto,
+  CarteraConfigDto, ComisionesDto, ComisionTiendaDto, CuponDto, CuponUpdateDto, LiquidacionDto, ListarLiquidacionesDto, RecargosDto, SaldosDto, ZonaDto,
   ZonaUpdateDto,
 } from './negocio.dto';
 
@@ -95,6 +96,12 @@ export class NegocioService {
     return this.config.guardar('comisiones', { tiendaPct: dto.tiendaPct, envioPct: dto.envioPct }, admin.id);
   }
 
+  async guardarCartera(admin: Usuario, dto: CarteraConfigDto) {
+    // Los campos que no manda (versiones anteriores del panel) conservan su valor actual.
+    const actual = await this.config.get('cartera');
+    return this.config.guardar('cartera', { ...actual, ...dto }, admin.id);
+  }
+
   guardarRecargos(admin: Usuario, dto: RecargosDto) {
     return this.config.guardar('recargos', JSON.parse(JSON.stringify(dto)), admin.id);
   }
@@ -153,9 +160,15 @@ export class NegocioService {
     return (await this.conUsos([await this.cupones.save(c)]))[0];
   }
 
+  async usuario(id: string) {
+    const u = await this.usuarios.findOneBy({ id });
+    if (!u) throw noEncontrado('Usuario no encontrado');
+    return u;
+  }
+
   // ───────── saldos y liquidaciones
 
-  /** Usuarios con saldo distinto de cero (quién le debe a PaPedir y a quién le debe PaPedir). */
+  /** Carteras distintas de cero: quién debe a PaPedir (saldo < 0) y a quién le debe PaPedir (saldo > 0). */
   async saldos(q: SaldosDto) {
     const filas = await this.ds.query(
       `SELECT u.id, u.nombre, u.rol, sum(m.monto)::float8 AS saldo, max(m.creado_en) AS "ultimoMovimiento"
@@ -164,15 +177,15 @@ export class NegocioService {
        GROUP BY u.id HAVING sum(m.monto) <> 0 ORDER BY abs(sum(m.monto)) DESC`,
       [q.rol ?? null],
     );
-    const totalPorCobrar = redondear(filas.filter((f) => f.saldo > 0).reduce((s, f) => s + f.saldo, 0));
-    const totalPorPagar = redondear(-filas.filter((f) => f.saldo < 0).reduce((s, f) => s + f.saldo, 0));
+    const totalPorCobrar = redondear(-filas.filter((f) => f.saldo < 0).reduce((s, f) => s + f.saldo, 0));
+    const totalPorPagar = redondear(filas.filter((f) => f.saldo > 0).reduce((s, f) => s + f.saldo, 0));
     return { totalPorCobrar, totalPorPagar, usuarios: filas.map((f) => ({ ...f, saldo: redondear(f.saldo) })) };
   }
 
   async liquidar(admin: Usuario, dto: LiquidacionDto) {
     const u = await this.usuarios.findOneBy({ id: dto.usuarioId });
     if (!u) throw noEncontrado('Usuario no encontrado');
-    if (u.rol !== 'tienda' && u.rol !== 'repartidor') throw invalido('Solo tiendas y repartidores tienen saldo', 'usuarioId');
+    if (u.rol === 'soporte' || u.rol === 'admin') throw invalido('Las cuentas internas no tienen cartera', 'usuarioId');
     const liq = await this.ds.transaction(async (m) => {
       const l = await m.save(
         m.create(Liquidacion, {
@@ -182,7 +195,8 @@ export class NegocioService {
       );
       await m.insert(Movimiento, {
         usuarioId: u.id, liquidacionId: l.id, tipo: 'liquidacion',
-        monto: dto.sentido === 'cobro' ? -dto.monto : dto.monto,
+        // Cobro: el usuario pagó lo que debía (su saldo sube). Pago: PaPedir le entregó su saldo a favor (baja).
+        monto: dto.sentido === 'cobro' ? dto.monto : -dto.monto,
         descripcion: dto.sentido === 'cobro' ? `Pago recibido (${dto.metodo})` : `Pago de PaPedir (${dto.metodo})`,
       });
       return l;
@@ -197,7 +211,7 @@ export class NegocioService {
 
   private vistaLiquidacion = (l: Liquidacion) => ({
     id: l.id, usuarioId: l.usuarioId, sentido: l.sentido, monto: l.monto, metodo: l.metodo, referencia: l.referencia, nota: l.nota,
-    registradoPor: l.registradoPor, creadoEn: l.creadoEn,
+    registradoPor: l.registradoPor, creadoEn: l.creadoEn, anuladaEn: l.anuladaEn, anuladaMotivo: l.anuladaMotivo,
   });
 
   async listarLiquidaciones(q: ListarLiquidacionesDto) {
@@ -222,8 +236,7 @@ export class NegocioService {
        GROUP BY 1 ORDER BY count(*) DESC`,
       [desde, hasta],
     );
-    const textos = new Map<string, string>(Object.values(MOTIVOS).flat().map(([c, t]) => [c, t] as [string, string]));
-    return { desde, hasta, motivos: filas.map((f) => ({ ...f, texto: textos.get(f.codigo) ?? f.codigo })) };
+    return { desde, hasta, motivos: filas.map((f) => ({ ...f, texto: textoMotivo(f.codigo) })) };
   }
 }
 
@@ -248,6 +261,8 @@ export class NegocioController {
   @Roles('admin') @Get('admin/configuracion') configuracion() { return this.svc.configuracion(); }
   @Roles('admin') @Put('admin/configuracion/comisiones')
   comisiones(@Actor() u: Usuario, @Body() dto: ComisionesDto) { return this.svc.guardarComisiones(u, dto); }
+  @Roles('admin') @Put('admin/configuracion/cartera')
+  cartera(@Actor() u: Usuario, @Body() dto: CarteraConfigDto) { return this.svc.guardarCartera(u, dto); }
   @Roles('admin') @Put('admin/configuracion/recargos')
   recargos(@Actor() u: Usuario, @Body() dto: RecargosDto) { return this.svc.guardarRecargos(u, dto); }
   @Roles('admin') @Put('admin/tiendas/:id/comision')
@@ -272,11 +287,15 @@ export class NegocioController {
   }
 
   // Saldos y liquidaciones
-  @Roles('tienda', 'repartidor') @Get('saldo')
-  saldo(@Actor() u: Usuario, @Query() q: PaginaDto) { return this.finanzas.estadoDeCuenta(u.id, q); }
+  /** Mi cartera (cliente, tienda o repartidor). /saldo se conserva como alias. */
+  @Roles('cliente', 'tienda', 'repartidor') @Get(['cartera', 'saldo'])
+  saldo(@Actor() u: Usuario, @Query() q: PaginaDto) { return this.finanzas.estadoDeCuenta(u.id, u.rol, q); }
   @Roles('admin') @Get('admin/saldos') saldos(@Query() q: SaldosDto) { return this.svc.saldos(q); }
-  @Roles('admin') @Get('admin/usuarios/:id/saldo')
-  saldoDe(@Param('id', UuidPipe) id: string, @Query() q: PaginaDto) { return this.finanzas.estadoDeCuenta(id, q); }
+  @Roles('soporte', 'admin') @Get('admin/usuarios/:id/saldo')
+  async saldoDe(@Param('id', UuidPipe) id: string, @Query() q: PaginaDto) {
+    const u = await this.svc.usuario(id);
+    return this.finanzas.estadoDeCuenta(id, u.rol, q);
+  }
   @Roles('admin') @Get('admin/liquidaciones') liquidaciones(@Query() q: ListarLiquidacionesDto) { return this.svc.listarLiquidaciones(q); }
   @Roles('admin') @Post('admin/liquidaciones') liquidar(@Actor() u: Usuario, @Body() dto: LiquidacionDto) { return this.svc.liquidar(u, dto); }
 

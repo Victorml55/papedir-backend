@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: PaPedir API
-  version: 1.7.0
+  version: 1.11.1
   description: |
     Contrato de la API de PaPedir, plataforma de reparto a domicilio en Celaya, Gto.
 
@@ -56,6 +56,12 @@ tags:
     description: Subida de imágenes (productos, tiendas, perfil, evidencia de entrega)
   - name: Documentos
     description: Documentos privados de repartidores y tiendas (INE, licencia...) y su revisión por soporte
+  - name: Geo
+    description: Sugerencias de direcciones y dirección de un punto
+  - name: Catálogos
+    description: Listas que edita admin (categorías, motivos, documentos, términos)
+  - name: Panel
+    description: Control total desde la web de soporte y admin
 
 security:
   - bearerAuth: []
@@ -666,6 +672,124 @@ paths:
                 items: { $ref: '#/components/schemas/MenuCategoria' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /tiendas/solicitudes:
+    get:
+      operationId: misSolicitudesTienda
+      tags: [Tiendas]
+      summary: Mis solicitudes de tienda nueva (rol tienda)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/SolicitudTienda' }
+    post:
+      operationId: solicitarTienda
+      tags: [Tiendas]
+      summary: Pedir otra tienda o sucursal (rol tienda)
+      description: |
+        Queda en revisión hasta que soporte o admin la aprueben; al aprobarla se crea la tienda cerrada.
+        Solo con la cuenta aprobada (`CUENTA_PENDIENTE`). Con `copiarMenuDe` se copiará el menú de otra sucursal propia.
+        Máximo 10 tiendas contando las solicitudes en revisión (`LIMITE_SUCURSALES`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SucursalInput' }
+      responses:
+        '202':
+          description: En revisión
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SolicitudTienda' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409':
+          description: CUENTA_PENDIENTE o LIMITE_SUCURSALES
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /tiendas/solicitudes/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    delete:
+      operationId: cancelarSolicitudTienda
+      tags: [Tiendas]
+      summary: Cancelar mi solicitud en revisión
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SolicitudTienda' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /soporte/solicitudes-tienda:
+    get:
+      operationId: listarSolicitudesTienda
+      tags: [Soporte]
+      summary: Solicitudes de tienda nueva (soporte y admin)
+      parameters:
+        - { name: estado, in: query, schema: { type: string, enum: [pendiente, aprobada, rechazada, cancelada] } }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/SolicitudTienda' }
+                  meta: { $ref: '#/components/schemas/PaginaMeta' }
+
+  /soporte/solicitudes-tienda/{id}/aprobar:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: aprobarSolicitudTienda
+      tags: [Soporte]
+      summary: Aprobar y crear la tienda
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SolicitudTienda' }
+        '409':
+          description: Ya revisada o el dueño no está activo
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /soporte/solicitudes-tienda/{id}/rechazar:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: rechazarSolicitudTienda
+      tags: [Soporte]
+      summary: Rechazar con motivo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [motivo]
+              properties:
+                motivo: { type: string, maxLength: 500 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SolicitudTienda' }
+
   /tiendas/mias:
     get:
       operationId: listarMisSucursales
@@ -684,22 +808,20 @@ paths:
                 items: { $ref: '#/components/schemas/Tienda' }
     post:
       operationId: crearSucursal
+      deprecated: true
       tags: [Tiendas]
-      summary: Agregar una sucursal (rol tienda)
-      description: |
-        Solo con la cuenta aprobada (`CUENTA_PENDIENTE`). Nace cerrada. Con `copiarMenuDe` copia categorías,
-        productos y opciones de otra sucursal propia (sin inventario). Máximo 10 sucursales (`LIMITE_SUCURSALES`).
+      summary: Alias de POST /tiendas/solicitudes
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/SucursalInput' }
       responses:
-        '201':
-          description: Creada
+        '202':
+          description: Solicitud creada
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Tienda' }
+              schema: { $ref: '#/components/schemas/SolicitudTienda' }
         '400': { $ref: '#/components/responses/ValidationError' }
         '409':
           description: Cuenta sin aprobar o límite de sucursales
@@ -1565,8 +1687,11 @@ paths:
     put:
       operationId: guardarMiVehiculo
       tags: [Repartidor]
-      summary: Registrar o cambiar mi vehículo
-      description: El cliente lo ve en su pedido para reconocer al repartidor. La placa es obligatoria salvo en bicicleta.
+      summary: Registrar mi vehículo (al darme de alta)
+      description: |
+        El cliente lo ve en su pedido para reconocer al repartidor. La placa es obligatoria salvo en bicicleta (en bicicleta se ignora).
+        El repartidor lo registra mientras su cuenta está en revisión, o la primera vez si ya está aprobado. Después de eso,
+        cambiarlo responde 409 `VEHICULO_BLOQUEADO`: lo cambia soporte desde el panel (`PUT /soporte/usuarios/{id}/vehiculo`).
       requestBody:
         required: true
         content:
@@ -1579,6 +1704,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Vehiculo' }
         '400': { $ref: '#/components/responses/ValidationError' }
+        '409': { description: '`VEHICULO_BLOQUEADO`: ya tiene vehículo y su cuenta está aprobada; lo cambia soporte' }
 
   /repartidor/ganancias:
     get:
@@ -1614,7 +1740,7 @@ paths:
               required: [disponible]
               properties:
                 disponible: { type: boolean }
-      description: No se puede desconectar con un viaje activo, ni conectar con la cuenta pendiente de aprobación.
+      description: No se puede desconectar con un viaje activo, ni conectar con la cuenta pendiente de aprobación (`CUENTA_PENDIENTE`) o sin vehículo registrado (`SIN_VEHICULO`).
       responses:
         '200':
           description: OK
@@ -1813,6 +1939,10 @@ paths:
       operationId: listarRepartidorHistorial
       tags: [Repartidor]
       summary: Pedidos entregados por mí
+      description: |
+        Pedidos ya terminados, del más reciente al más antiguo. En pedidos terminados `tienda.telefono` y
+        `destino.telefono` vienen en `null` (privacidad). `resumen` es de toda la vida del repartidor:
+        úsalo para el encabezado en vez de sumar la página cargada.
       parameters:
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/Limit'
@@ -1823,11 +1953,19 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [data, meta, resumen]
                 properties:
                   data:
                     type: array
                     items: { $ref: '#/components/schemas/Pedido' }
                   meta: { $ref: '#/components/schemas/PaginaMeta' }
+                  resumen:
+                    type: object
+                    required: [entregas, propinas, gananciaNeta]
+                    properties:
+                      entregas: { type: integer, description: Pedidos entregados en total }
+                      propinas: { type: number }
+                      gananciaNeta: { type: number, description: 'Envío + propinas − comisión de PaPedir + cupones que PaPedir le reembolsa' }
 
   # ─────────────────────────── ARCHIVOS ───────────────────────────
   /documentos:
@@ -2037,14 +2175,32 @@ paths:
                 type: array
                 items: { $ref: '#/components/schemas/Zona' }
 
+  /cartera:
+    get:
+      operationId: miCartera
+      tags: [Finanzas]
+      summary: Mi cartera (cliente, tienda o repartidor)
+      description: |
+        Como en DiDi. Saldo > 0: dinero a tu favor. Saldo < 0: lo que debes a PaPedir.
+        - Cliente: los reembolsos suman; cancelar en efectivo cuando la tienda ya aceptó resta. Se aplica sola en el siguiente pedido.
+        - Tienda y repartidor: las comisiones de lo cobrado en efectivo restan; lo cobrado con tarjeta suma. Se salda con una liquidación.
+        Con `bloqueado` = true la cuenta pasó su límite de deuda (`DEUDA_EXCEDIDA`).
+        `/saldo` es un alias.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EstadoDeCuenta' }
   /saldo:
     get:
       operationId: miSaldo
+      deprecated: true
       tags: [Finanzas]
-      summary: Mi saldo con PaPedir y sus movimientos (tienda y repartidor)
-      description: |
-        Saldo > 0: debes a PaPedir (comisiones). Saldo < 0: PaPedir te debe (cupones de PaPedir que cobraste de menos).
-        Se salda con una liquidación que registra admin.
+      summary: Alias de /cartera
       parameters:
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/Limit'
@@ -2268,6 +2424,9 @@ paths:
       tags: [Soporte]
       summary: Buscar cualquier pedido (rol soporte/admin)
       parameters:
+        - { name: clienteId, in: query, schema: { type: string, format: uuid } }
+        - { name: repartidorId, in: query, schema: { type: string, format: uuid } }
+        - { name: tiendaId, in: query, schema: { type: string, format: uuid } }
         - name: estado
           in: query
           schema: { type: string }
@@ -2290,6 +2449,47 @@ paths:
                     items: { $ref: '#/components/schemas/Pedido' }
                   meta: { $ref: '#/components/schemas/PaginaMeta' }
 
+    post:
+      operationId: crearPedidoPorCliente
+      tags: [Panel]
+      summary: Crear un pedido a nombre de un cliente (efectivo)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { allOf: [{ $ref: '#/components/schemas/CrearPedidoRequest' }, { type: object, required: [clienteId], properties: { clienteId: { type: string, format: uuid } } }] }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /soporte/pedidos/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    patch:
+      operationId: editarPedidoPanel
+      tags: [Panel]
+      summary: Editar notas, datos de entrega o propina
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [motivo], properties: { notas: { type: string, maxLength: 300, nullable: true }, destinoNombre: { type: string }, destinoTelefono: { type: string, pattern: '^[0-9]{10}$' }, destinoReferencias: { type: string, nullable: true }, propina: { type: number, minimum: 0, maximum: 500, description: Solo efectivo y sin terminar; ajusta el total }, motivo: { type: string, maxLength: 500 } } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+        '409':
+          description: El pedido terminó o se pagó con tarjeta
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /soporte/pedidos/{id}/cancelar:
     parameters:
       - $ref: '#/components/parameters/Id'
@@ -2297,17 +2497,55 @@ paths:
       operationId: soporteCancelarPedido
       tags: [Soporte]
       summary: Cancelar pedido en cualquier estado no final
+      description: Si usó saldo de la cartera, se le devuelve al cliente. Con tarjeta se reembolsa a la tarjeta salvo `reembolsoA = cartera`.
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/MotivoCancelacionRequest' }
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/MotivoCancelacionRequest'
+                - type: object
+                  properties:
+                    reembolsoA: { type: string, enum: [tarjeta, cartera], description: 'Pedido pagado con tarjeta: a dónde va el dinero (tarjeta por omisión)' }
+                    cobrarCargo: { type: boolean, description: 'Efectivo con la tienda ya preparando: cargar al cliente la tarifa de cancelación' }
       responses:
         '200':
           description: OK
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Pedido' }
+
+  /soporte/pedidos/{id}/reembolso:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: reembolsarACartera
+      tags: [Soporte]
+      summary: Reembolsar a la cartera del cliente (pedido entregado)
+      description: Parcial o total, por ejemplo si faltó un producto. Lo absorbe PaPedir. El tope es lo que pagó el cliente menos lo ya reembolsado.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [monto, motivo]
+              properties:
+                monto: { type: number, minimum: 1, example: 45 }
+                motivo: { type: string, maxLength: 500, example: Faltó una bebida }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409':
+          description: Pedido no entregado, sin cliente o REEMBOLSO_EXCEDIDO
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /soporte/pedidos/{id}/completar:
     parameters:
@@ -2390,12 +2628,621 @@ paths:
                 estado: { $ref: '#/components/schemas/EstadoTicket' }
                 asignarmelo: { type: boolean }
                 atendidoPor: { type: string, format: uuid, description: 'Pasar el ticket a otra persona del equipo (soporte o admin)' }
+                asunto: { type: string, maxLength: 120 }
+                prioridad: { type: string, enum: [baja, normal, alta, urgente] }
       responses:
         '200':
           description: OK
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Ticket' }
+
+  /geo/sugerencias:
+    get:
+      operationId: sugerenciasDireccion
+      tags: [Geo]
+      summary: Sugerencias de direcciones mientras se escribe
+      description: "Para autocompletar al capturar una ubicación (tiendas, direcciones de clientes, correcciones). Prioriza resultados cerca de lat/lng (por omisión, Celaya). Cualquier usuario con sesión."
+      parameters:
+        - { name: q, in: query, required: true, schema: { type: string, minLength: 3, maxLength: 150 } }
+        - { name: lat, in: query, schema: { type: number } }
+        - { name: lng, in: query, schema: { type: number } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 10, default: 6 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Sugerencia' } }
+        '503':
+          description: GEO_NO_DISPONIBLE; marcar el punto en el mapa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /geo/direccion:
+    get:
+      operationId: direccionDePunto
+      tags: [Geo]
+      summary: Dirección de un punto marcado en el mapa
+      parameters:
+        - { name: lat, in: query, required: true, schema: { type: number } }
+        - { name: lng, in: query, required: true, schema: { type: number } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  resultado: { type: object, nullable: true, allOf: [{ $ref: '#/components/schemas/Sugerencia' }] }
+        '503': { description: GEO_NO_DISPONIBLE }
+
+  /catalogos:
+    get:
+      security: []
+      operationId: catalogosVigentes
+      tags: [Catálogos]
+      summary: Categorías, motivos, documentos y versión de términos vigentes
+      description: "Público. Lo edita admin; las apps lo leen en vez de tener las listas fijas."
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CatalogosPublicos' }
+
+  /admin/catalogos:
+    get:
+      operationId: catalogosAdmin
+      tags: [Catálogos]
+      summary: Catálogos completos (incluye lo desactivado)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Catalogos' }
+    put:
+      operationId: guardarCatalogos
+      tags: [Catálogos]
+      summary: Guardar catálogos
+      description: "Los códigos que ya existen no se quitan, solo se desactivan. El motivo otro debe seguir activo. Cambiar versionTerminos obliga a todos a aceptar los términos otra vez."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Catalogos' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Catalogos' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /soporte/usuarios/{id}/direcciones:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: direccionesDeCliente
+      tags: [Panel]
+      summary: Direcciones de un cliente
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Direccion' } }
+    post:
+      operationId: crearDireccionDeCliente
+      tags: [Panel]
+      summary: Agregar dirección a un cliente
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DireccionInput' }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Direccion' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /soporte/usuarios/{id}/direcciones/{dir}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+      - { name: dir, in: path, required: true, schema: { type: string, format: uuid } }
+    patch:
+      operationId: editarDireccionDeCliente
+      tags: [Panel]
+      summary: Editar dirección de un cliente
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DireccionInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Direccion' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: borrarDireccionDeCliente
+      tags: [Panel]
+      summary: Borrar dirección de un cliente
+      responses:
+        '204': { description: Hecho }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /soporte/usuarios/{id}/vehiculo:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    put:
+      operationId: vehiculoDeRepartidor
+      tags: [Panel]
+      summary: Editar el vehículo de un repartidor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Vehiculo' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Vehiculo' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /soporte/repartidores/{id}/desconectar:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: desconectarRepartidor
+      tags: [Panel]
+      summary: Desconectar a un repartidor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [motivo], properties: { motivo: { type: string, maxLength: 500 } } }
+      responses:
+        '200':
+          description: OK
+        '409':
+          description: Ya desconectado o con viaje activo (VIAJE_ACTIVO)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /soporte/pedidos/cotizar:
+    post:
+      operationId: cotizarPorCliente
+      tags: [Panel]
+      summary: Cotizar a nombre de un cliente (efectivo)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { allOf: [{ $ref: '#/components/schemas/CotizarPedidoRequest' }, { type: object, required: [clienteId], properties: { clienteId: { type: string, format: uuid } } }] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Cotizacion' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /soporte/pedidos/{id}/asignar:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: asignarPedido
+      tags: [Panel]
+      summary: Asignar un pedido listo a un repartidor
+      description: "Solo pedidos listos para recoger y repartidores conectados. No revisa distancia; respeta el máximo de pedidos por viaje."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [repartidorId, motivo], properties: { repartidorId: { type: string, format: uuid }, motivo: { type: string } } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+        '409':
+          description: REPARTIDOR_DESCONECTADO, VIAJE_LLENO, CUENTA_PENDIENTE o TRANSICION_INVALIDA
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /soporte/pedidos/{id}/avanzar:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: avanzarPedido
+      tags: [Panel]
+      summary: Mover el pedido al siguiente estado
+      description: "programado → creado → aceptado_tienda → listo_para_recoger; asignado → en_tienda → en_camino → en_domicilio. Listo se asigna y en domicilio se completa con sus propias rutas."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [motivo], properties: { motivo: { type: string, maxLength: 500 } } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+        '409':
+          description: TRANSICION_INVALIDA
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /soporte/tickets:
+    post:
+      operationId: ticketANombre
+      tags: [Panel]
+      summary: Abrir un ticket a nombre de alguien
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { allOf: [{ $ref: '#/components/schemas/TicketInput' }, { type: object, required: [usuarioId], properties: { usuarioId: { type: string, format: uuid } } }] }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ticket' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /soporte/tiendas/{id}/categorias:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: categoriasDeTienda
+      tags: [Panel]
+      summary: Categorías del menú de una tienda
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/CategoriaProducto' } }
+    post:
+      operationId: crearCategoriaDeTienda
+      tags: [Panel]
+      summary: Crear categoría en el menú de una tienda
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CategoriaProductoInput' }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CategoriaProducto' }
+
+  /soporte/categorias/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    patch:
+      operationId: editarCategoriaPanel
+      tags: [Panel]
+      summary: Editar categoría del menú
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CategoriaProductoInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CategoriaProducto' }
+    delete:
+      operationId: borrarCategoriaPanel
+      tags: [Panel]
+      summary: Borrar categoría del menú
+      responses:
+        '204': { description: Hecho }
+        '409':
+          description: CATEGORIA_CON_PRODUCTOS
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /soporte/tiendas/{id}/productos:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: productosDeTienda
+      tags: [Panel]
+      summary: Productos de una tienda
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Producto' } }
+    post:
+      operationId: crearProductoDeTienda
+      tags: [Panel]
+      summary: Crear producto en una tienda
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductoInput' }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Producto' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /soporte/productos/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    patch:
+      operationId: editarProductoPanel
+      tags: [Panel]
+      summary: Editar producto
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductoInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Producto' }
+    delete:
+      operationId: borrarProductoPanel
+      tags: [Panel]
+      summary: Borrar producto
+      responses:
+        '204': { description: Hecho }
+
+  /soporte/productos/{id}/opciones:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    put:
+      operationId: opcionesProductoPanel
+      tags: [Panel]
+      summary: Reemplazar las opciones de un producto
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [grupos], properties: { grupos: { type: array, items: { $ref: '#/components/schemas/GrupoOpcionesInput' } } } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Producto' }
+
+  /soporte/tiendas/{id}/horario:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: horarioDeTienda
+      tags: [Panel]
+      summary: Horario de una tienda
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Horario' }
+    put:
+      operationId: guardarHorarioDeTienda
+      tags: [Panel]
+      summary: Reemplazar el horario de una tienda
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Horario' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Horario' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /admin/documentos/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    delete:
+      operationId: borrarDocumento
+      tags: [Admin]
+      summary: Borrar un documento
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [motivo], properties: { motivo: { type: string, maxLength: 500 } } }
+      responses:
+        '204': { description: Hecho }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/tickets/{id}/mensajes/{mensaje}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+      - { name: mensaje, in: path, required: true, schema: { type: string, format: uuid } }
+    delete:
+      operationId: borrarMensajeTicket
+      tags: [Admin]
+      summary: Borrar un mensaje inapropiado de un ticket
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [motivo], properties: { motivo: { type: string, maxLength: 500 } } }
+      responses:
+        '204': { description: Hecho }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/usuarios/{id}/ajuste:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: ajusteCartera
+      tags: [Finanzas]
+      summary: Abonar o cargar a mano en una cartera
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [monto, motivo], properties: { monto: { type: number, description: '+ abona, − carga', example: 50 }, motivo: { type: string, maxLength: 500 } } }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EstadoDeCuenta' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /soporte/usuarios/{id}/ajuste:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: ajusteCarteraSoporte
+      tags: [Finanzas]
+      summary: Abonar o cargar a mano en una cartera (soporte con tope, admin sin tope)
+      description: Soporte puede mover hasta `cartera.ajusteMaxSoporte` por movimiento; si pasa, responde 403 `TOPE_SOPORTE`. Mismo cuerpo que /admin/usuarios/{id}/ajuste.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [monto, motivo], properties: { monto: { type: number, description: '+ abona, − carga', example: 50 }, motivo: { type: string, maxLength: 500 } } }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EstadoDeCuenta' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /soporte/pedidos/{id}/resolucion:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: verResolucion
+      tags: [Soporte]
+      summary: Cómo se cerró una cancelación, o las compensaciones sugeridas según de quién fue la culpa
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResolucionVista' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: resolverCancelacion
+      tags: [Soporte]
+      summary: Resolver una cancelación (una sola vez)
+      description: |
+        Registra de quién fue la culpa, la nota, el acuerdo con las personas (si lo hubo) y aplica cada acción
+        como movimiento `resolucion` en la cartera de quien corresponda (solo participantes del pedido).
+        Soporte tiene el tope `cartera.ajusteMaxSoporte` por acción (403 `TOPE_SOPORTE`). 409 `YA_RESUELTO` si ya se resolvió.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResolucionInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResolucionVista' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: '`YA_RESUELTO` si ya se resolvió; `TRANSICION_INVALIDA` si el pedido no está cancelado ni rechazado' }
+
+  /soporte/pedidos/{id}/reembolso/reintentar:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: reintentarReembolso
+      tags: [Soporte]
+      summary: Reembolso que falló en Stripe; reintentarlo a la tarjeta o mandarlo a la cartera del cliente
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [destino], properties: { destino: { type: string, enum: [tarjeta, cartera] } } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+        '409': { description: '`SIN_REEMBOLSO_PENDIENTE` si el pedido no tiene un reembolso fallido' }
+
+  /admin/liquidaciones/{id}/anular:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: anularLiquidacion
+      tags: [Finanzas]
+      summary: Anular una liquidación mal capturada
+      description: "Registra el movimiento contrario; la liquidación queda marcada como anulada."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [motivo], properties: { motivo: { type: string, maxLength: 500 } } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, properties: { id: { type: string, format: uuid }, anuladaEn: { type: string, format: date-time }, anuladaMotivo: { type: string }, saldo: { type: number } } }
+        '409':
+          description: LIQUIDACION_ANULADA
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /admin/resenas/{pedidoId}:
+    parameters:
+      - { name: pedidoId, in: path, required: true, schema: { type: string, format: uuid } }
+    delete:
+      operationId: borrarResena
+      tags: [Admin]
+      summary: Borrar una reseña falsa
+      description: "Deja de contar en los promedios de la tienda y del repartidor."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [motivo], properties: { motivo: { type: string, maxLength: 500 } } }
+      responses:
+        '204': { description: Hecho }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /soporte/usuarios:
     get:
@@ -2476,6 +3323,29 @@ paths:
                 type: array
                 items: { $ref: '#/components/schemas/Documento' }
 
+    post:
+      operationId: documentoANombre
+      tags: [Panel]
+      summary: Subir un documento a nombre de una tienda o repartidor
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [tipo, archivo]
+              properties:
+                tipo: { type: string, description: Tipo del catálogo de documentos }
+                aprobar: { type: string, enum: ['true', 'false'], description: true = queda aprobado al subirlo }
+                archivo: { type: string, format: binary }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Documento' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
   /soporte/documentos/{id}/archivo:
     parameters:
       - $ref: '#/components/parameters/Id'
@@ -2513,7 +3383,7 @@ paths:
               required: [aprobado]
               properties:
                 aprobado: { type: boolean }
-                motivo: { type: string, maxLength: 300, example: La foto está borrosa }
+                motivo: { type: string, maxLength: 500, example: La foto está borrosa }
       responses:
         '200':
           description: Revisado
@@ -2537,6 +3407,35 @@ paths:
               schema: { $ref: '#/components/schemas/UsuarioDetalle' }
         '409':
           description: La cuenta no está bloqueada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /soporte/usuarios/{id}/rechazar:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: rechazarUsuario
+      tags: [Soporte]
+      summary: Regresar una solicitud de cuenta (tienda o repartidor) con el motivo
+      description: La cuenta sigue pendiente para que corrija; ve el motivo en `motivoRechazo` de /auth/me y le llega un push.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [motivo]
+              properties:
+                motivo: { type: string, maxLength: 500, example: La foto de la licencia está borrosa }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Usuario' }
+        '409':
+          description: La cuenta no está pendiente de aprobación
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -2598,7 +3497,8 @@ paths:
     post:
       operationId: crearUsuarioInterno
       tags: [Admin]
-      summary: Crear cuentas de soporte o admin
+      summary: Crear cuentas del equipo, clientes o repartidores
+      description: Nacen activas y con el correo verificado; clientes y repartidores aceptan los términos al entrar. Las tiendas se crean con POST /admin/tiendas.
       requestBody:
         required: true
         content:
@@ -2612,7 +3512,8 @@ paths:
                 password: { type: string, minLength: 8 }
                 rol:
                   type: string
-                  enum: [soporte, admin]
+                  enum: [soporte, admin, cliente, repartidor]
+                telefono: { type: string, pattern: '^[0-9]{10}$', description: Obligatorio para cliente y repartidor }
       responses:
         '201':
           description: Creado
@@ -2738,6 +3639,24 @@ paths:
               schema: { $ref: '#/components/schemas/Comisiones' }
         '400': { $ref: '#/components/responses/ValidationError' }
 
+  /admin/configuracion/cartera:
+    put:
+      operationId: guardarCartera
+      tags: [Configuración]
+      summary: Límites de deuda y cargo por cancelación
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CarteraConfig' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CarteraConfig' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
   /admin/configuracion/recargos:
     put:
       operationId: guardarRecargos
@@ -2755,6 +3674,98 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Recargos' }
         '400': { $ref: '#/components/responses/ValidationError' }
+
+  /admin/tiendas:
+    post:
+      operationId: crearTiendaAdmin
+      tags: [Admin]
+      summary: Dar de alta una tienda
+      description: "Con duenoId se agrega como sucursal de una cuenta de tienda existente; con dueno se crea la cuenta (activa y con el correo verificado). La tienda nace cerrada: el dueño decide cuándo abrir."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TiendaAdminInput' }
+      responses:
+        '201':
+          description: Creada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FichaTienda' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409':
+          description: EMAIL_REGISTRADO, DUENO_INACTIVO o LIMITE_SUCURSALES
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /admin/tiendas/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    patch:
+      operationId: editarTiendaAdmin
+      tags: [Admin]
+      summary: Corregir los datos de una tienda
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TiendaUpdate' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FichaTienda' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: TIENDA_ELIMINADA
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      operationId: eliminarTiendaAdmin
+      tags: [Admin]
+      summary: Dar de baja una tienda
+      description: Baja lógica. Deja de verse y de recibir pedidos; sus pedidos, pagos y reseñas se conservan y se puede restaurar.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [motivo]
+              properties:
+                motivo: { type: string, maxLength: 500 }
+      responses:
+        '204': { description: Dada de baja }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: TIENE_PEDIDOS_ACTIVOS o TIENDA_ELIMINADA
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /admin/tiendas/{id}/restaurar:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      operationId: restaurarTiendaAdmin
+      tags: [Admin]
+      summary: Deshacer la baja de una tienda
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FichaTienda' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: TIENDA_ACTIVA o LIMITE_SUCURSALES
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /admin/tiendas/{id}/comision:
     parameters:
@@ -2846,17 +3857,17 @@ paths:
       parameters:
         - name: rol
           in: query
-          schema: { type: string, enum: [tienda, repartidor] }
+          schema: { type: string, enum: [cliente, tienda, repartidor] }
       responses:
         '200':
           description: OK
           content:
             application/json:
-              schema: 
+              schema:
                 type: object
                 properties:
-                  totalPorCobrar: { type: number }
-                  totalPorPagar: { type: number }
+                  totalPorCobrar: { type: number, description: Suma de lo que deben (carteras negativas) }
+                  totalPorPagar: { type: number, description: Suma de los saldos a favor (carteras positivas) }
                   usuarios:
                     type: array
                     items:
@@ -2874,7 +3885,7 @@ paths:
     get:
       operationId: saldoDeUsuario
       tags: [Finanzas]
-      summary: Estado de cuenta de una tienda o repartidor
+      summary: Cartera de una cuenta (soporte y admin)
       parameters:
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/Limit'
@@ -2984,6 +3995,7 @@ paths:
         - { name: estado, in: query, description: Estado de la cuenta del dueño, schema: { $ref: '#/components/schemas/EstadoCuenta' } }
         - { name: plan, in: query, schema: { type: string, enum: [basico, pro, premium] } }
         - { name: abierta, in: query, description: Si recibe pedidos ahora, schema: { type: string, enum: [si, no] } }
+        - { name: eliminadas, in: query, description: 'si = solo las dadas de baja (por omisión no aparecen)', schema: { type: string, enum: [si, no] } }
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/Limit'
       responses:
@@ -3030,7 +4042,7 @@ paths:
               required: [minutos, motivo]
               properties:
                 minutos: { type: integer, minimum: 0, maximum: 4320, example: 60 }
-                motivo: { type: string, maxLength: 300, example: Varias quejas por pedidos incompletos }
+                motivo: { type: string, maxLength: 500, example: Varias quejas por pedidos incompletos }
       responses:
         '200':
           description: La ficha actualizada
@@ -3118,7 +4130,7 @@ paths:
               required: [oculta]
               properties:
                 oculta: { type: boolean }
-                motivo: { type: string, maxLength: 300, description: Obligatorio al ocultar, example: Lenguaje ofensivo }
+                motivo: { type: string, maxLength: 500, description: Obligatorio al ocultar, example: Lenguaje ofensivo }
       responses:
         '200':
           description: OK
@@ -3166,7 +4178,7 @@ paths:
               type: object
               required: [motivo]
               properties:
-                motivo: { type: string, maxLength: 300 }
+                motivo: { type: string, maxLength: 500 }
       responses:
         '204': { description: Eliminada }
         '409': { description: '`TIENE_PEDIDOS_ACTIVOS`, `ULTIMO_ADMIN` o `CUENTA_ELIMINADA`' }
@@ -3241,6 +4253,20 @@ paths:
                   rol: { type: string }
                   destinatarios: { type: integer }
                   modo: { type: string, enum: [enviada, simulada], description: '`simulada`: la API no tiene Firebase configurado' }
+
+    get:
+      operationId: historialPush
+      tags: [Admin]
+      summary: Notificaciones generales enviadas
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/EnvioPush' } }, meta: { $ref: '#/components/schemas/PaginaMeta' } } }
 
   /admin/bitacora:
     get:
@@ -3482,6 +4508,8 @@ components:
         puedeCambiarFoto:
           type: boolean
           description: Solo las cuentas de correo; las de Google o GitHub usan la foto del proveedor
+        motivoRechazo: { type: string, nullable: true, description: 'Cuenta pendiente que soporte regresó: qué debe corregir. Se limpia al aprobarla' }
+        rechazadaEn: { type: string, format: date-time, nullable: true }
         creadoEn: { type: string, format: date-time }
 
     UsuarioDetalle:
@@ -3514,6 +4542,14 @@ components:
               type: boolean
               nullable: true
               description: Repartidor y tienda; true si sus documentos requeridos están aprobados
+            disponible: { type: boolean, nullable: true, description: 'Repartidor: si está conectado ahora' }
+            cancelacionesAtribuidas:
+              type: object
+              nullable: true
+              description: 'Cliente, tienda o repartidor: cancelaciones resueltas en las que tuvo la culpa'
+              properties:
+                total: { type: integer }
+                ultimos30: { type: integer }
 
     EventoCuenta:
       type: object
@@ -3638,7 +4674,8 @@ components:
     # ── Tiendas / productos ──
     CategoriaTienda:
       type: string
-      enum: [comida, abarrotes, farmacia, materiales, otros]
+      example: comida
+      description: 'Código del catálogo de categorías (GET /catalogos). Base: comida, abarrotes, farmacia, materiales, otros; admin puede agregar más.'
 
     Tienda:
       type: object
@@ -3648,7 +4685,7 @@ components:
         categoria: { $ref: '#/components/schemas/CategoriaTienda' }
         descripcion: { type: string, nullable: true }
         imagenUrl: { type: string, nullable: true }
-        telefono: { type: string, example: '4615550000' }
+        telefono: { type: string, nullable: true, example: '4615550000' }
         direccion: { type: string, example: 'Calle Hidalgo 120, Celaya' }
         ubicacion: { $ref: '#/components/schemas/Coordenadas' }
         abierta: { type: boolean, example: true, description: Interruptor general que maneja la tienda }
@@ -3684,6 +4721,38 @@ components:
           description: Una tienda pendiente de aprobación no puede abrir (409 CUENTA_PENDIENTE)
         tiempoPreparacionMin: { type: integer, minimum: 5, maximum: 120 }
 
+    SolicitudTienda:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        estado: { type: string, enum: [pendiente, aprobada, rechazada, cancelada] }
+        datos:
+          type: object
+          description: Lo que pidió el dueño (mismos campos que SucursalInput)
+          additionalProperties: true
+          properties:
+            nombre: { type: string }
+            categoria: { $ref: '#/components/schemas/CategoriaTienda' }
+            descripcion: { type: string, nullable: true }
+            imagenUrl: { type: string, nullable: true }
+            telefono: { type: string, nullable: true }
+            direccion: { type: string }
+            ubicacion: { $ref: '#/components/schemas/Coordenadas' }
+            tiempoPreparacionMin: { type: integer }
+        motivo: { type: string, nullable: true, description: Por qué se rechazó }
+        tiendaId: { type: string, format: uuid, nullable: true, description: La tienda creada al aprobarla }
+        revisadaEn: { type: string, format: date-time, nullable: true }
+        creadoEn: { type: string, format: date-time }
+        dueno:
+          type: object
+          nullable: true
+          description: Solo en el listado de soporte
+          properties:
+            id: { type: string, format: uuid }
+            nombre: { type: string }
+            email: { type: string }
+            telefono: { type: string, nullable: true }
+
     SucursalInput:
       type: object
       required: [nombre, categoria, direccion, ubicacion]
@@ -3695,7 +4764,31 @@ components:
         direccion: { type: string }
         ubicacion: { $ref: '#/components/schemas/Coordenadas' }
         tiempoPreparacionMin: { type: integer, minimum: 5, maximum: 120 }
+        imagenUrl: { type: string, maxLength: 500 }
         copiarMenuDe: { type: string, format: uuid, description: Id de otra sucursal propia }
+
+    TiendaAdminInput:
+      type: object
+      required: [nombre, categoria, direccion, ubicacion]
+      description: Envía duenoId (cuenta de tienda existente) o dueno (cuenta nueva).
+      properties:
+        duenoId: { type: string, format: uuid }
+        dueno:
+          type: object
+          required: [nombre, email, telefono, password]
+          properties:
+            nombre: { type: string, maxLength: 80 }
+            email: { type: string, format: email }
+            telefono: { type: string, pattern: '^[0-9]{10}$' }
+            password: { type: string, minLength: 8, maxLength: 72, description: Contraseña temporal para compartir con el dueño }
+        nombre: { type: string, maxLength: 80, example: Tacos Don Pepe }
+        categoria: { $ref: '#/components/schemas/CategoriaTienda' }
+        descripcion: { type: string, maxLength: 300 }
+        imagenUrl: { type: string, maxLength: 500 }
+        telefono: { type: string, pattern: '^[0-9]{10}$' }
+        direccion: { type: string, maxLength: 200 }
+        ubicacion: { $ref: '#/components/schemas/Coordenadas' }
+        tiempoPreparacionMin: { type: integer, minimum: 5, maximum: 120 }
 
     Turno:
       type: object
@@ -3929,7 +5022,9 @@ components:
             codigo: { type: string }
             descripcion: { type: string, nullable: true }
         propina: { type: number, example: 20.0 }
-        total: { type: number, example: 206.0, description: subtotal + costoEnvio + propina − descuento }
+        saldoAplicado: { type: number, example: 0, description: Saldo a favor de la cartera que se descontó solo }
+        deudaCobrada: { type: number, example: 0, description: Adeudo anterior del cliente que se sumó al total }
+        total: { type: number, example: 206.0, description: subtotal + costoEnvio + propina − descuento − saldoAplicado + deudaCobrada }
         metodoPago: { $ref: '#/components/schemas/MetodoPago' }
         programadoPara: { type: string, format: date-time, nullable: true }
         tiempoEstimadoMin:
@@ -3975,7 +5070,7 @@ components:
       type: object
       required: [destino, descripcion, montoACobrar]
       properties:
-        destino: { $ref: '#/components/schemas/Destino' }
+        destino: { $ref: '#/components/schemas/DestinoInput' }
         descripcion: { type: string, example: 1 paquete de ropa }
         montoACobrar:
           type: number
@@ -3989,9 +5084,19 @@ components:
       required: [nombre, telefono, direccion, ubicacion]
       properties:
         nombre: { type: string, example: Luis Hernández }
-        telefono: { type: string, example: '4619876543' }
+        telefono: { type: string, nullable: true, example: '4619876543', description: null cuando el pedido ya terminó o quien consulta no debe verlo }
         direccion: { type: string, example: 'Av. Irrigación 300, Celaya' }
         referencias: { type: string, nullable: true }
+        ubicacion: { $ref: '#/components/schemas/Coordenadas' }
+
+    DestinoInput:
+      type: object
+      required: [nombre, telefono, direccion, ubicacion]
+      properties:
+        nombre: { type: string, maxLength: 80, example: Luis Hernández }
+        telefono: { type: string, pattern: '^[0-9]{10}$', example: '4619876543' }
+        direccion: { type: string, maxLength: 200, example: 'Av. Irrigación 300, Celaya' }
+        referencias: { type: string, maxLength: 200, nullable: true }
         ubicacion: { $ref: '#/components/schemas/Coordenadas' }
 
     TiendaResumen:
@@ -3999,7 +5104,7 @@ components:
       properties:
         id: { type: string, format: uuid }
         nombre: { type: string, example: Tacos Don Pepe }
-        telefono: { type: string, example: '4615550000' }
+        telefono: { type: string, nullable: true, example: '4615550000', description: null cuando el pedido ya terminó o quien consulta no debe verlo }
         direccion: { type: string }
         ubicacion: { $ref: '#/components/schemas/Coordenadas' }
 
@@ -4009,7 +5114,7 @@ components:
       properties:
         id: { type: string, format: uuid }
         nombre: { type: string, example: Carlos Ruiz }
-        telefono: { type: string, example: '4611112233' }
+        telefono: { type: string, nullable: true, example: '4611112233' }
         ubicacion:
           type: object
           nullable: true
@@ -4070,6 +5175,8 @@ components:
           items: { $ref: '#/components/schemas/Recargo' }
         propina: { type: number, example: 0 }
         descuento: { type: number, example: 0 }
+        saldoAplicado: { type: number, example: 0, description: Saldo de la cartera del cliente usado en el pedido }
+        deudaCobrada: { type: number, example: 0, description: Adeudo anterior del cliente cobrado en el pedido }
         total: { type: number, example: 216.0 }
         distanciaKm: { type: number, example: 4.42 }
         metodoPago: { $ref: '#/components/schemas/MetodoPago' }
@@ -4091,6 +5198,13 @@ components:
         grupoId: { type: string, format: uuid, nullable: true, description: Pedidos del mismo carrito de varias tiendas }
         programadoPara: { type: string, format: date-time, nullable: true }
         motivoCancelacion: { type: string, nullable: true, description: Código del catálogo si se canceló o rechazó }
+        cancelacion:
+          type: object
+          nullable: true
+          description: Solo para el cliente. Si puede cancelar ahora y cuánto le costaría (cancelación tardía en efectivo)
+          properties:
+            permitida: { type: boolean }
+            cargo: { type: number, example: 25 }
         codigoEntrega:
           type: string
           nullable: true
@@ -4222,6 +5336,8 @@ components:
         abiertaAhora: { type: boolean, description: 'Recibe pedidos en este momento (interruptor, horario y pausa)' }
         pausadaHasta: { type: string, format: date-time, nullable: true }
         comisionPct: { type: number, nullable: true, description: Comisión propia; null usa la general }
+        eliminadaEn: { type: string, format: date-time, nullable: true }
+        eliminadaMotivo: { type: string, nullable: true }
         dueno:
           type: object
           required: [id, nombre, email, estado]
@@ -4243,6 +5359,9 @@ components:
           required: [dueno, comision, ultimos30Dias, sucursales, menu, pedidos, resenas, suscripciones]
           properties:
             pausadaHasta: { type: string, format: date-time, nullable: true }
+            eliminadaEn: { type: string, format: date-time, nullable: true, description: Fecha de baja; null = activa }
+            eliminadaMotivo: { type: string, nullable: true }
+            tiempoPreparacionMin: { type: integer }
             dueno: { $ref: '#/components/schemas/Usuario' }
             comision:
               type: object
@@ -4318,7 +5437,7 @@ components:
         pedidosEnCurso: { type: integer }
         entregasHoy: { type: integer }
         entregasTotales: { type: integer }
-        saldo: { type: number, description: 'Positivo: le debe a PaPedir' }
+        saldo: { type: number, description: 'Cartera: positivo a su favor, negativo lo que debe' }
         creadoEn: { type: string, format: date-time }
 
     MapaDespacho:
@@ -4566,7 +5685,8 @@ components:
     # ── Documentos ──
     TipoDocumento:
       type: string
-      enum: [ine, licencia, tarjeta_circulacion, comprobante_domicilio, constancia_fiscal]
+      example: ine
+      description: 'Tipo del catálogo de documentos (GET /catalogos). Base: ine, licencia, tarjeta_circulacion, comprobante_domicilio, constancia_fiscal.'
 
     Documento:
       type: object
@@ -4698,6 +5818,72 @@ components:
       properties:
         comisiones: { $ref: '#/components/schemas/Comisiones' }
         recargos: { $ref: '#/components/schemas/Recargos' }
+        cartera: { $ref: '#/components/schemas/CarteraConfig' }
+
+    AccionResolucion:
+      type: object
+      required: [usuarioId, monto, concepto]
+      properties:
+        usuarioId: { type: string, format: uuid }
+        rol: { type: string, enum: [cliente, tienda, repartidor], readOnly: true }
+        nombre: { type: string, readOnly: true }
+        monto: { type: number, description: '+ abona a su cartera, − le carga' }
+        concepto: { type: string, maxLength: 160, example: Crédito de disculpa }
+
+    ResolucionInput:
+      type: object
+      required: [culpable, nota, acciones]
+      properties:
+        culpable: { type: string, enum: [cliente, tienda, repartidor, plataforma] }
+        nota: { type: string, maxLength: 500 }
+        acuerdo: { type: string, maxLength: 1000, description: Lo que se acordó con la persona si ninguna sugerencia convenció }
+        acciones:
+          type: array
+          maxItems: 10
+          items: { $ref: '#/components/schemas/AccionResolucion' }
+
+    ResolucionVista:
+      type: object
+      properties:
+        resolucion:
+          type: object
+          nullable: true
+          properties:
+            culpable: { type: string, enum: [cliente, tienda, repartidor, plataforma] }
+            nota: { type: string }
+            acuerdo: { type: string, nullable: true }
+            acciones: { type: array, items: { $ref: '#/components/schemas/AccionResolucion' } }
+            resueltoPor: { type: object, properties: { id: { type: string, format: uuid }, nombre: { type: string } } }
+            creadoEn: { type: string, format: date-time }
+        compensacionRepartidor: { type: number, description: Lo que se le abonó solo al repartidor al cancelarse con el pedido en mano }
+        participantes:
+          type: array
+          items:
+            type: object
+            properties:
+              usuarioId: { type: string, format: uuid }
+              rol: { type: string, enum: [cliente, tienda, repartidor] }
+              nombre: { type: string }
+        sugerencias:
+          type: object
+          description: Acciones sugeridas para cada posible culpable; soporte las edita o agrega las que acuerde
+          properties:
+            cliente: { type: array, items: { $ref: '#/components/schemas/AccionResolucion' } }
+            tienda: { type: array, items: { $ref: '#/components/schemas/AccionResolucion' } }
+            repartidor: { type: array, items: { $ref: '#/components/schemas/AccionResolucion' } }
+            plataforma: { type: array, items: { $ref: '#/components/schemas/AccionResolucion' } }
+        topeSoporte: { type: number }
+
+    CarteraConfig:
+      type: object
+      required: [limiteDeudaTienda, limiteDeudaRepartidor, limiteDeudaCliente, cargoCancelacion]
+      properties:
+        limiteDeudaTienda: { type: number, example: 1500, description: Con más deuda no puede abrir ni aceptar pedidos }
+        limiteDeudaRepartidor: { type: number, example: 500, description: Con más deuda no puede conectarse ni tomar pedidos }
+        limiteDeudaCliente: { type: number, example: 150, description: Con más deuda solo puede pagar con tarjeta }
+        cargoCancelacion: { type: number, example: 25, description: Al cliente que cancela en efectivo cuando la tienda ya aceptó; se le abona a la tienda }
+        ajusteMaxSoporte: { type: number, example: 500, description: 'Tope por movimiento que soporte puede abonar o cargar a mano (ajustes y resoluciones). Admin no tiene tope' }
+        creditoDisculpa: { type: number, example: 30, description: Crédito que se sugiere al cliente cuando la cancelación no fue su culpa }
 
     CuponInput:
       type: object
@@ -4742,11 +5928,15 @@ components:
         id: { type: string, format: uuid }
         tipo:
           type: string
-          enum: [comision_tienda, comision_envio, descuento_plataforma, liquidacion, venta_tarjeta, envio_tarjeta]
+          enum: [comision_tienda, comision_envio, descuento_plataforma, liquidacion, venta_tarjeta, envio_tarjeta, pago_con_saldo, reverso_saldo, saldo_cliente, pago_deuda, deuda_cobrada, reembolso, cargo_cancelacion, compensacion_cancelacion, ajuste, compensacion_repartidor, resolucion]
           description: |
-            venta_tarjeta / envio_tarjeta: pedido pagado con tarjeta; PaPedir le debe a la tienda su venta
-            y al repartidor su envío y propina
-        monto: { type: number, description: '> 0 aumenta lo que debes a PaPedir; < 0 lo disminuye' }
+            venta_tarjeta / envio_tarjeta: pedido con tarjeta; PaPedir le paga a la tienda su venta y al repartidor su envío y propina.
+            pago_con_saldo / pago_deuda: el cliente usó su saldo o pagó su adeudo en un pedido; reverso_saldo lo deshace si no se entregó.
+            saldo_cliente / deuda_cobrada: en efectivo el repartidor cobró de menos (saldo del cliente) o de más (adeudo del cliente).
+            reembolso: soporte devolvió dinero a la cartera. cargo_cancelacion / compensacion_cancelacion: cancelación tardía en efectivo.
+            compensacion_repartidor: el pedido se canceló cuando el repartidor ya lo llevaba; se le abona su envío y, en efectivo, lo que pagó a la tienda.
+            resolucion: abono o cargo que soporte aplicó al resolver una cancelación (según de quién fue la culpa o lo acordado).
+        monto: { type: number, description: '> 0 a tu favor; < 0 lo que debes' }
         descripcion: { type: string, example: Comisión 10% del pedido R-000123 }
         pedidoId: { type: string, format: uuid, nullable: true }
         tiendaId: { type: string, format: uuid, nullable: true }
@@ -4756,12 +5946,10 @@ components:
     EstadoDeCuenta:
       type: object
       properties:
-        saldo: { type: number, example: 152.3 }
-        aFavorDe:
-          type: string
-          nullable: true
-          enum: [plataforma, usuario, null]
-          description: plataforma = debes a PaPedir; usuario = PaPedir te debe
+        saldo: { type: number, example: -152.3, description: '> 0 a tu favor; < 0 lo que debes' }
+        estado: { type: string, enum: [a_favor, debe, en_cero] }
+        limiteDeuda: { type: number, nullable: true, description: Deuda máxima permitida para tu rol }
+        bloqueado: { type: boolean, description: Pasaste el límite de deuda }
         movimientos:
           type: object
           properties:
@@ -4792,7 +5980,95 @@ components:
             id: { type: string, format: uuid }
             registradoPor: { type: string, format: uuid }
             creadoEn: { type: string, format: date-time }
+            anuladaEn: { type: string, format: date-time, nullable: true }
+            anuladaMotivo: { type: string, nullable: true }
         - $ref: '#/components/schemas/LiquidacionInput'
+
+    Sugerencia:
+      type: object
+      properties:
+        texto: { type: string, example: 'Instituto Tecnológico de Celaya, Av. Tecnológico' }
+        detalle: { type: string, nullable: true, example: 'Celaya, Gto.' }
+        ubicacion: { $ref: '#/components/schemas/Coordenadas' }
+        tipo: { type: string, nullable: true, example: university }
+
+    MotivoCatalogo:
+      type: object
+      required: [codigo, texto, activo]
+      properties:
+        codigo: { type: string, pattern: '^[a-z0-9_]{2,40}$' }
+        texto: { type: string }
+        activo: { type: boolean }
+
+    Catalogos:
+      type: object
+      required: [motivos, categorias, documentos, legal]
+      properties:
+        motivos:
+          type: object
+          properties:
+            cliente: { type: array, items: { $ref: '#/components/schemas/MotivoCatalogo' } }
+            tienda: { type: array, items: { $ref: '#/components/schemas/MotivoCatalogo' } }
+            soporte: { type: array, items: { $ref: '#/components/schemas/MotivoCatalogo' } }
+            sistema: { type: array, items: { $ref: '#/components/schemas/MotivoCatalogo' } }
+        categorias:
+          type: array
+          items:
+            type: object
+            required: [codigo, nombre, activa]
+            properties:
+              codigo: { type: string, pattern: '^[a-z0-9_]{2,40}$' }
+              nombre: { type: string }
+              activa: { type: boolean }
+        documentos:
+          type: object
+          properties:
+            repartidor: { type: array, items: { $ref: '#/components/schemas/DocumentoCatalogo' } }
+            tienda: { type: array, items: { $ref: '#/components/schemas/DocumentoCatalogo' } }
+            exigirParaAprobar: { type: boolean }
+        legal:
+          type: object
+          properties:
+            versionTerminos: { type: string, example: 2026-11 }
+
+    DocumentoCatalogo:
+      type: object
+      required: [tipo, nombre, obligatorio]
+      properties:
+        tipo: { type: string, pattern: '^[a-z0-9_]{2,40}$' }
+        nombre: { type: string }
+        obligatorio: { type: boolean }
+
+    CatalogosPublicos:
+      type: object
+      properties:
+        categorias: { type: array, items: { type: object, properties: { codigo: { type: string }, nombre: { type: string } } } }
+        motivos:
+          type: object
+          properties:
+            cliente: { type: array, items: { $ref: '#/components/schemas/Motivo' } }
+            tienda: { type: array, items: { $ref: '#/components/schemas/Motivo' } }
+            soporte: { type: array, items: { $ref: '#/components/schemas/Motivo' } }
+        documentos:
+          type: object
+          properties:
+            repartidor: { type: array, items: { $ref: '#/components/schemas/DocumentoCatalogo' } }
+            tienda: { type: array, items: { $ref: '#/components/schemas/DocumentoCatalogo' } }
+        versionTerminos: { type: string }
+
+    EnvioPush:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        destino: { type: string, enum: [tema, rol] }
+        tema: { type: string, nullable: true }
+        rol: { type: string, nullable: true }
+        titulo: { type: string }
+        cuerpo: { type: string }
+        destinatarios: { type: integer, nullable: true }
+        modo: { type: string, example: enviada }
+        creadoEn: { type: string, format: date-time }
+        actor: { type: object, nullable: true, properties: { id: { type: string, format: uuid }, nombre: { type: string, nullable: true } } }
 
     Plan:
       type: object
@@ -4843,6 +6119,7 @@ components:
         asunto: { type: string }
         descripcion: { type: string }
         estado: { $ref: '#/components/schemas/EstadoTicket' }
+        prioridad: { type: string, enum: [baja, normal, alta, urgente] }
         pedidoId: { type: string, format: uuid, nullable: true }
         creadoPor:
           type: object

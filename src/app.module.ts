@@ -11,6 +11,9 @@ import { AuthGuard, Publico } from './common/auth';
 import { FiltroErrores } from './common/errores';
 import { opcionesBD } from './database/data-source';
 import { DireccionesModule } from './direcciones/direcciones';
+import { GeoModule } from './geo/geo';
+import { ControlModule } from './control/control';
+import { ResolucionesModule } from './resoluciones/resoluciones';
 import { DocumentosModule } from './documentos/documentos';
 import { ClienteModule } from './cliente/cliente';
 import { NegocioModule } from './negocio/negocio';
@@ -50,6 +53,9 @@ export class HealthController {
     AuthModule,
     AdminModule,
     DireccionesModule,
+    GeoModule,
+    ControlModule,
+    ResolucionesModule,
     TiendasModule,
     UploadsModule,
     DocumentosModule,

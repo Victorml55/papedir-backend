@@ -5,7 +5,7 @@ import { UuidPipe } from '../common/util';
 import { Usuario } from '../database/entities';
 import {
   BuscarTiendasDto, CategoriaDto, CategoriaUpdateDto, HorarioDto, OpcionesProductoDto, PausaDto, ProductoDto, ProductoUpdateDto,
-  SucursalDto, TiendaUpdateDto,
+  ListaSolicitudesDto, RechazarSolicitudDto, SucursalDto, TiendaUpdateDto,
 } from './tiendas.dto';
 import { TiendasService } from './tiendas.service';
 
@@ -20,8 +20,24 @@ export class TiendasController {
   @Roles('tienda') @Get('tiendas/mias')
   sucursales(@Actor() u: Usuario) { return this.svc.misSucursales(u.id); }
 
-  @Roles('tienda') @Post('tiendas/mias')
-  crearSucursal(@Actor() u: Usuario, @Body() dto: SucursalDto) { return this.svc.crearSucursal(u, dto); }
+  /** Otra tienda o sucursal: ya no se crea al momento, queda como solicitud que revisa soporte. */
+  @Roles('tienda') @Post(['tiendas/solicitudes', 'tiendas/mias']) @HttpCode(202)
+  solicitar(@Actor() u: Usuario, @Body() dto: SucursalDto) { return this.svc.solicitar(u, dto); }
+
+  @Roles('tienda') @Get('tiendas/solicitudes')
+  misSolicitudes(@Actor() u: Usuario) { return this.svc.misSolicitudes(u.id); }
+
+  @Roles('tienda') @Delete('tiendas/solicitudes/:id')
+  cancelarSolicitud(@Actor() u: Usuario, @Param('id', UuidPipe) id: string) { return this.svc.cancelarSolicitud(u.id, id); }
+
+  @Roles('soporte', 'admin') @Get('soporte/solicitudes-tienda')
+  solicitudes(@Query() q: ListaSolicitudesDto) { return this.svc.solicitudes(q); }
+
+  @Roles('soporte', 'admin') @Post('soporte/solicitudes-tienda/:id/aprobar') @HttpCode(200)
+  aprobarSolicitud(@Actor() u: Usuario, @Param('id', UuidPipe) id: string) { return this.svc.aprobarSolicitud(u, id); }
+
+  @Roles('soporte', 'admin') @Post('soporte/solicitudes-tienda/:id/rechazar') @HttpCode(200)
+  rechazarSolicitud(@Actor() u: Usuario, @Param('id', UuidPipe) id: string, @Body() dto: RechazarSolicitudDto) { return this.svc.rechazarSolicitud(u, id, dto.motivo); }
 
   @Roles('tienda') @Get('tiendas/mia')
   async mia(@Actor() u: Usuario, @TiendaSel() t?: string) { return this.svc.vista(await this.svc.deUsuario(u.id, t)); }

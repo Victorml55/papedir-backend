@@ -1,6 +1,9 @@
+import { EsCategoria } from '../config/catalogos';
 import { Type } from 'class-transformer';
-import { IsBoolean, IsEmail, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min, MinLength, ValidateIf } from 'class-validator';
-import { PaginaDto } from '../common/dtos';
+import { IsBoolean, IsEmail, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from 'class-validator';
+import { CATEGORIAS_TIENDA } from '../auth/auth.dto';
+import { CoordenadasDto, PaginaDto } from '../common/dtos';
+import { TiendaUpdateDto } from '../tiendas/tiendas.dto';
 
 const SI_NO = ['si', 'no'] as const;
 
@@ -11,12 +14,42 @@ export class ListaTiendasDto extends PaginaDto {
   @IsOptional() @IsIn(['basico', 'pro', 'premium']) plan?: string;
   /** Si recibe pedidos en este momento. */
   @IsOptional() @IsIn(SI_NO) abierta?: (typeof SI_NO)[number];
+  /** si = solo las dadas de baja; por omisión no aparecen. */
+  @IsOptional() @IsIn(SI_NO) eliminadas?: (typeof SI_NO)[number];
+}
+
+/** Cuenta de dueño que se crea junto con la tienda. */
+export class NuevoDuenoDto {
+  @IsString() @IsNotEmpty() @MaxLength(80) nombre: string;
+  @IsEmail() @MaxLength(120) email: string;
+  @Matches(/^[0-9]{10}$/, { message: 'telefono debe tener 10 dígitos' }) telefono: string;
+  @IsString() @MinLength(8) @MaxLength(72) password: string;
+}
+
+export class CrearTiendaAdminDto {
+  /** Dueño existente (cuenta con rol tienda). Si no se envía, va `dueno` para crear la cuenta. */
+  @ValidateIf((o) => !o.dueno) @IsUUID() duenoId?: string;
+  @ValidateIf((o) => !o.duenoId) @ValidateNested() @Type(() => NuevoDuenoDto) dueno?: NuevoDuenoDto;
+  @IsString() @IsNotEmpty() @MaxLength(80) nombre: string;
+  @EsCategoria() categoria: string;
+  @IsOptional() @IsString() @MaxLength(300) descripcion?: string;
+  @IsOptional() @IsString() @MaxLength(500) imagenUrl?: string;
+  @IsOptional() @Matches(/^[0-9]{10}$/, { message: 'telefono debe tener 10 dígitos' }) telefono?: string;
+  @IsString() @IsNotEmpty() @MaxLength(200) direccion: string;
+  @ValidateNested() @Type(() => CoordenadasDto) ubicacion: CoordenadasDto;
+  @IsOptional() @IsInt() @Min(5) @Max(120) tiempoPreparacionMin?: number;
+}
+
+export class EditarTiendaAdminDto extends TiendaUpdateDto {}
+
+export class EliminarTiendaDto {
+  @IsString() @IsNotEmpty() @MaxLength(500) motivo: string;
 }
 
 export class PausaTiendaDto {
   /** Minutos de pausa; 0 quita la pausa. Máximo 3 días. */
   @Type(() => Number) @IsInt() @Min(0) @Max(4320) minutos: number;
-  @IsString() @IsNotEmpty() @MaxLength(300) motivo: string;
+  @IsString() @IsNotEmpty() @MaxLength(500) motivo: string;
 }
 
 export class ListaRepartidoresDto extends PaginaDto {
@@ -36,7 +69,7 @@ export class ListaResenasDto extends PaginaDto {
 
 export class ModerarResenaDto {
   @IsBoolean() oculta: boolean;
-  @ValidateIf((o) => o.oculta) @IsString() @IsNotEmpty() @MaxLength(300) motivo?: string;
+  @ValidateIf((o) => o.oculta) @IsString() @IsNotEmpty() @MaxLength(500) motivo?: string;
 }
 
 export class EditarUsuarioDto {
@@ -52,7 +85,7 @@ export class PasswordAdminDto {
 }
 
 export class EliminarUsuarioDto {
-  @IsString() @IsNotEmpty() @MaxLength(300) motivo: string;
+  @IsString() @IsNotEmpty() @MaxLength(500) motivo: string;
 }
 
 export const TEMAS = ['novedades', 'promociones', 'tiendas', 'repartidores'] as const;

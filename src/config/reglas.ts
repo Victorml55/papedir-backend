@@ -24,6 +24,15 @@ export const REGLAS = {
     maxTiendasPorGrupo: 3, // un carrito puede juntar pedidos de hasta 3 tiendas
   },
   // Valores por defecto; admin los cambia en /admin/configuracion sin redesplegar.
+  /** Cartera: positivo = saldo a favor; negativo = lo que se debe a PaPedir. Admin los cambia en Ajustes. */
+  cartera: {
+    limiteDeudaTienda: 1500, // con más deuda no puede abrir ni aceptar pedidos
+    limiteDeudaRepartidor: 500, // con más deuda no puede conectarse ni tomar pedidos
+    limiteDeudaCliente: 150, // con más deuda solo puede pagar con tarjeta
+    cargoCancelacion: 25, // al cliente que cancela en efectivo cuando la tienda ya aceptó; se le abona a la tienda
+    ajusteMaxSoporte: 500, // tope por movimiento que soporte puede abonar o cargar a mano (admin no tiene tope)
+    creditoDisculpa: 30, // crédito que se sugiere al cliente cuando la cancelación no fue su culpa
+  },
   comisiones: {
     tiendaPct: 10, // % sobre lo que la tienda cobra por productos
     envioPct: 10, // % sobre el costo de envío (incluye recargos)
@@ -38,6 +47,7 @@ export const REGLAS = {
   pagos: {
     moneda: 'mxn',
     maximoTarjeta: 10000, // con tarjeta el límite es más alto que en efectivo
+    minimoTarjeta: 10, // Stripe no cobra menos de $10 MXN
     diasPlan: 30,
   },
   /**

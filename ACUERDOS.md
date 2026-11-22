@@ -126,6 +126,8 @@ El mock acepta cualquier token y devuelve los ejemplos del contrato (montos y co
 
 El mock **no guarda estado ni tiene Socket.IO**: sirve para construir pantallas. Los flujos entre apps y el tiempo real se prueban con el backend real desde la semana 5.
 
+**Versión vigente del contrato: 1.11.1** (`info.version` de `docs/openapi.yaml`). Las apps deben trabajar con esa misma copia en `papedir-frontend/docs/openapi.yaml`; si su rama tiene una versión anterior, la actualizan desde `main` antes de programar algo nuevo.
+
 ### Cómo se cambia el contrato
 
 1. Quien necesite el cambio abre un **issue** en `papedir-backend` con la etiqueta `contrato`, explicando qué necesita y por qué.
@@ -169,7 +171,7 @@ Todas las respuestas de error tienen la misma forma:
 
 | Código | Significado | Qué hace la app |
 |---|---|---|
-| 400 | Datos inválidos | Mostrar `detalles` junto a cada campo |
+| 400 | Datos inválidos (`error: "VALIDACION"`) | Mostrar `detalles` junto a cada campo. Desde 1.10.1 los mensajes vienen en español (`"telefono debe tener 10 dígitos"`, `"nombre debe tener como máximo 80 caracteres"`) y `message` incluye el primero (`"Datos inválidos: …"`), así que mostrar `message` ya basta si la pantalla no ubica cada campo |
 | 401 | Token expirado o inválido | Llamar `/auth/refresh` una vez y reintentar; si falla, mandar al login |
 | 403 | Sin permiso, app equivocada o cuenta baneada | Mostrar `message` y cerrar sesión si está baneado |
 | 404 | No existe | Mensaje y regresar |
@@ -194,7 +196,9 @@ El campo `error` es un código estable; las apps deciden con él, no con el text
 | `TIENE_PEDIDOS_ACTIVOS` | Quiere eliminar su cuenta con pedidos en curso | Aviso: terminar o cancelar primero |
 | `TIENDA_CERRADA` | Tienda cerrada, en pausa o fuera de horario | Mostrar `message` y regresar al listado |
 | `DOCUMENTO_APROBADO` | Quiere reemplazar un documento ya aprobado | Aviso: pedirlo a soporte |
-| `LIMITE_SUCURSALES` | Ya tiene 10 sucursales | Aviso |
+| `LIMITE_SUCURSALES` | Ya tiene 10 tiendas, contando sus solicitudes en revisión | Aviso |
+| `DEUDA_EXCEDIDA` | Su cartera pasó el límite de deuda: el repartidor no puede conectarse ni tomar pedidos, la tienda no puede abrir ni aceptar, el cliente no puede pagar en efectivo | Mostrar `message` y llevar a la pantalla de cartera |
+| `SALDO_CAMBIO` | La cartera del cliente cambió entre cotizar y confirmar | Volver a cotizar |
 | `CUPON_INVALIDO` | Cupón inexistente, vencido, agotado, ya usado o con compra mínima | Mostrar `message` junto al campo del cupón |
 | `CHAT_CERRADO` | Chat de un pedido que ya no está en camino | Deshabilitar el chat |
 | `REGISTRO_REQUERIDO` | Primera vez con Firebase | Mostrar "Completa tu registro" (teléfono, términos, datos de la tienda) |
@@ -221,7 +225,7 @@ La lista completa está en el schema `Error` de `openapi.yaml`. Todos los valore
 
 ### Sucursales (App Tienda)
 
-- Un dueño puede tener varias sucursales: `GET /tiendas/mias` y `POST /tiendas/mias`.
+- Un dueño puede tener varias sucursales: `GET /tiendas/mias`. Una sucursal nueva **se pide** con `POST /tiendas/solicitudes` y queda en revisión hasta que soporte o admin la aprueben (ver "Fase 4"). `POST /tiendas/mias` es un alias de la solicitud.
 - Para trabajar con una sucursal, la app manda el header `X-Tienda-Id` en las rutas `/tiendas/mia...`, `GET /pedidos` y los pedidos manuales. Sin header se usa la primera sucursal, así que una app que no maneje sucursales sigue funcionando igual.
 - Mostrar `abiertaAhora` (no `abierta`): considera el interruptor de la tienda, la pausa temporal (`/tiendas/mia/pausa`) y el horario semanal (`/tiendas/mia/horario`).
 - Productos: varias fotos (`imagenes`), inventario (`stock`, `null` = sin control) y opciones (`PUT /productos/{id}/opciones`). Para mostrar "Agotado" usar `agotado`.
@@ -247,18 +251,66 @@ Las 3 apps:
 - Bandeja de notificaciones: `GET /notificaciones` (con `noLeidas`), marcar leídas. Todo push también queda ahí.
 - Chat del pedido entre cliente y repartidor: `GET/POST /pedidos/{id}/mensajes` mientras va en camino.
 
-App Tienda: cupones propios (`/tiendas/mia/cupones`), responder reseñas (`POST /pedidos/{id}/calificacion/respuesta`), rechazar con `{ codigo }`, y su saldo con PaPedir (`GET /saldo`). El `montoAPagarTienda` ya descuenta sus cupones.
+App Tienda: cupones propios (`/tiendas/mia/cupones`), responder reseñas (`POST /pedidos/{id}/calificacion/respuesta`), rechazar con `{ codigo }`, y su cartera (`GET /cartera`). El `montoAPagarTienda` ya descuenta sus cupones.
 
-App Repartidor: `propina` en el pedido y el viaje, `gananciaNeta` en ganancias y su saldo (`GET /saldo`).
+App Repartidor: `propina` en el pedido y el viaje, `gananciaNeta` en ganancias, su cartera (`GET /cartera`) y la ruta por calles del viaje (`GET /repartidor/viaje-actual/ruta`, dibujar sus `puntos` en vez de líneas rectas).
 
-Dinero (todo en efectivo): el repartidor cobra el `total`, paga `montoAPagarTienda` a la tienda y se queda con envío + propina. PaPedir lleva la cuenta: la tienda le debe su comisión, el repartidor la comisión del envío, y PaPedir le debe al repartidor los cupones de la plataforma. Admin registra los pagos en la web (liquidaciones).
+Dinero en efectivo: el repartidor cobra el `total`, paga `montoAPagarTienda` a la tienda y se queda con envío + propina. PaPedir lleva la cuenta en la **cartera** de cada uno (ver "Fase 4"). Admin registra los pagos en la web (liquidaciones).
+
+### Fase 4: cartera, solicitudes y aprobación de cuentas
+
+**Cartera (como DiDi), para las 3 apps:** `GET /cartera` (alias `/saldo`) devuelve `saldo`, `estado` (`a_favor`, `debe`, `en_cero`), `limiteDeuda`, `bloqueado` y los `movimientos` paginados.
+
+- Signo: **positivo = dinero a favor; negativo = lo que debe a PaPedir.** Mostrar "Tienes $X a favor" o "Debes $X".
+- Tienda: en efectivo debe la comisión; con tarjeta se le abona su venta; se le abona la tarifa cuando un cliente cancela tarde.
+- Repartidor: debe la comisión del envío y el adeudo de clientes que cobró en efectivo; se le abona lo cobrado con tarjeta, los cupones de PaPedir y el saldo que usó el cliente en efectivo (cobró de menos).
+- Cliente: suma por reembolsos de soporte; resta por cancelar tarde en efectivo. **Se aplica sola al pedir:** la cotización y el pedido traen `saldoAplicado` (saldo a favor que se descontó) y `deudaCobrada` (adeudo que se sumó). El `total` ya los incluye; la app solo los muestra como renglones del resumen. Si el pedido no se entrega, se devuelven solos.
+- Con `bloqueado = true` la cuenta pasó su límite (admin lo fija en la web) y las acciones responden `DEUDA_EXCEDIDA`.
+
+**Cancelación del cliente:** puede cancelar hasta antes de que un repartidor tome el pedido. Si el pedido es en efectivo y la tienda ya lo aceptó, cuesta la tarifa de cancelación (va a su cartera y se le abona a la tienda). Cada pedido trae `cancelacion: { permitida, cargo }` solo para el cliente: el botón se muestra con `permitida` y, si `cargo > 0`, la app avisa el monto antes de confirmar.
+
+**Solicitud de cuenta (tienda y repartidor):** al registrarse quedan en `pendiente_aprobacion` (`CUENTA_PENDIENTE` al intentar trabajar). Soporte o admin la aprueban (`cuenta:aprobada`) o la regresan con motivo (`cuenta:rechazada`); el motivo viene en `motivoRechazo` de `GET /auth/me`. La app muestra la pantalla "Tu cuenta está en revisión" y, si hay `motivoRechazo`, qué debe corregir (por ejemplo, volver a subir un documento).
+
+**Solicitudes de tienda (App Tienda):** un dueño ya aprobado pide otra tienda o sucursal con `POST /tiendas/solicitudes` (mismos campos que antes, más `imagenUrl` y `copiarMenuDe` opcionales). Ve el estado de las suyas con `GET /tiendas/solicitudes` (`pendiente`, `aprobada`, `rechazada` con `motivo`, `cancelada`) y puede cancelar una pendiente con `DELETE /tiendas/solicitudes/{id}`. Al aprobarse llega `solicitud_tienda:aprobada` con el `tiendaId`; la tienda nace cerrada y aparece en `GET /tiendas/mias`.
+
+### Fase 5: ubicaciones y catálogos
+
+**Capturar una ubicación (las 3 apps y la web):** siempre con el mismo patrón.
+1. Campo de texto con sugerencias mientras se escribe: `GET /geo/sugerencias?q=...&lat=&lng=` (mínimo 3 letras, esperar ~300 ms entre teclas; mandar la posición del teléfono para priorizar lo cercano). Cada sugerencia trae `texto`, `detalle` y `ubicacion`.
+2. Al elegir una, se mueve el marcador del mapa a esa `ubicacion` y el texto queda en el campo.
+3. El usuario puede afinar arrastrando o tocando el mapa; con el punto nuevo se pide `GET /geo/direccion?lat=&lng=` para actualizar el texto (si `resultado` es `null`, se deja escribir a mano).
+4. Si responde `GEO_NO_DISPONIBLE` (503), se oculta la lista y se pide marcar el punto en el mapa.
+Aplica a direcciones del cliente, la tienda (registro, edición, solicitud de sucursal) y cualquier ubicación nueva. El backend usa Photon (OpenStreetMap); si después se cambia a Google Places, las apps no cambian.
+
+**Catálogos:** `GET /catalogos` (público) trae las categorías de tienda, los motivos de cancelación, los documentos por rol y la versión de términos vigentes. Admin los edita en la web, así que las apps **no** deben tener esas listas fijas en el código: las leen de aquí (por ejemplo, el selector de categoría del registro de tienda y la lista de documentos del repartidor). `CategoriaTienda` y `TipoDocumento` ya no son enums cerrados en el contrato.
+
+**Límites que las apps deben respetar en sus formularios (1.10.1):** teléfonos de 10 dígitos exactos (solo números, lada incluida); todo `motivo` hasta 500 caracteres; propina hasta $500 (crear y editar); precios con hasta 2 decimales (no limitar el campo a pasos de 0.5); nombre de categoría de menú hasta 40; búsquedas (`q`) hasta 60. Validar en el formulario evita que el usuario se entere hasta que el backend responde 400.
+
+**Campos que pueden venir en `null` (1.10.2):** los teléfonos de un pedido (`tienda.telefono`, `destino.telefono`, `repartidor.telefono`) se ocultan cuando el pedido terminó o quien consulta no debe verlos, y `Tienda.telefono` puede faltar en sucursales. En los modelos de las apps van como `String?`; si el botón de llamar no tiene número, se ofrece el chat o soporte. Regla general: todo campo `nullable: true` del contrato se declara opcional en el modelo, y el `catch` que rodea a una petición atrapa cualquier error (no solo `DioException`), porque un fallo al leer el JSON deja la pantalla cargando sin avisar.
+
+**Historial del repartidor:** `GET /repartidor/historial` trae `resumen` (`entregas`, `propinas`, `gananciaNeta`) de toda su vida en la app; el encabezado usa eso y no la suma de la página cargada.
+
+### Cancelaciones: reembolsos, compensaciones y resolución (1.11.0)
+
+**Automático al cancelar o rechazar (cualquier actor):**
+- Tarjeta: se reembolsa el total a la tarjeta (o a la cartera si soporte lo elige). Si Stripe falla, el pedido queda `reembolso_fallido` y soporte lo reintenta (`POST /soporte/pedidos/{id}/reembolso/reintentar { destino: tarjeta | cartera }`).
+- El saldo de cartera que el cliente usó se le devuelve.
+- Si el repartidor **ya llevaba el pedido** (`en_camino` o `en_domicilio`), se le abona solo su envío y, en efectivo, lo que le pagó a la tienda (movimiento `compensacion_repartidor`). El repartidor nunca pierde dinero por una cancelación; PaPedir lo pone y después se le cobra a quien tuvo la culpa.
+
+**Resolver la cancelación (soporte o admin, una vez por pedido):** `GET /soporte/pedidos/{id}/resolucion` trae las compensaciones sugeridas para cada posible culpable (cliente, tienda, repartidor o PaPedir). Soporte elige la culpa, edita o quita sugerencias, agrega lo que acuerde con la persona y lo aplica con `POST`. Cada acción es un movimiento `resolucion` en la cartera. La culpa suma al contador `cancelacionesAtribuidas` de la cuenta.
+
+**Ajustes manuales:** soporte también abona o carga a mano (`POST /soporte/usuarios/{id}/ajuste`) hasta `cartera.ajusteMaxSoporte` por movimiento (por omisión $500); admin no tiene tope. Las sanciones (pausar tienda, banear cuenta) ya las puede hacer soporte.
+
+**Apps:** la cartera puede mostrar los tipos nuevos `compensacion_repartidor` y `resolucion` con su `descripcion`; no hay que cambiar nada más. El repartidor recibe la notificación "Pedido cancelado: no pierdes".
+
+**Vehículo del repartidor (1.11.1):** lo registra él mismo al darse de alta (en revisión, o la primera vez si un admin lo creó ya aprobado). En bicicleta no lleva placa. Ya aprobado y con vehículo, `PUT /repartidor/vehiculo` responde 409 `VEHICULO_BLOQUEADO` y la app lo muestra de solo lectura con "abre un ticket con soporte"; soporte lo cambia desde el panel. Sin vehículo no puede conectarse (409 `SIN_VEHICULO`): la app debe llevarlo a registrarlo.
 
 ### Estados del pedido
 
 ```
 creado → aceptado_tienda → listo_para_recoger → asignado → en_tienda → en_camino → en_domicilio → entregado
    │            │                  │
-   └→ rechazado └──── cancelado ───┘   (después de "asignado" solo soporte cancela)
+   └→ rechazado └──── cancelado ───┘   (después de "asignado" solo soporte cancela; ver tarifa en "Fase 4")
 ```
 
 Los pedidos manuales de la tienda nacen directamente en `listo_para_recoger`. Si la tienda no responde en 5 minutos, el backend cancela el pedido solo.
@@ -268,12 +320,13 @@ Los pedidos manuales de la tienda nacen directamente en `listo_para_recoger`. Si
 | Cotizar | Cliente · Tienda (manual) | `POST /pedidos/cotizar` · `/pedidos/cotizar-manual` |
 | Aceptar / rechazar | Tienda | `POST /pedidos/{id}/aceptar` · `/rechazar` |
 | Marcar listo | Tienda | `POST /pedidos/{id}/listo` |
-| Cancelar | Cliente (solo `creado`) · Tienda (antes de `asignado`) | `POST /pedidos/{id}/cancelar` |
+| Cancelar | Cliente y tienda (antes de `asignado`; el cliente paga tarifa si es efectivo y la tienda ya aceptó) | `POST /pedidos/{id}/cancelar` |
 | Tomar (máx. 4 por viaje) | Repartidor | `POST /repartidor/pedidos/{id}/tomar` |
 | Llegada / salida tienda (geocerca 150 m) | Repartidor | `POST /repartidor/pedidos/{id}/llegada-tienda` · `/salida-tienda` |
-| Llegada / entrega con código (geocerca 150 m) | Repartidor | `POST /repartidor/pedidos/{id}/llegada-cliente` · `/entregado` |
+| Llegada / entrega con código (geocerca 150 m) | Repartidor | `POST /repartidor/pedidos/{id}/llegada-cliente` · `/entregado` (todas mandan `{ "ubicacion": { "lat", "lng" } }`; la entrega además `codigoEntrega`) |
+| Ruta por calles del viaje | Repartidor | `GET /repartidor/viaje-actual/ruta` |
 | Calificar (hasta 24 h después) | Cliente | `POST /pedidos/{id}/calificar` |
-| Cancelar, completar, corregir ubicación, liberar | Soporte | `/soporte/pedidos/{id}/...` |
+| Cancelar (reembolso a tarjeta o cartera, con o sin cargo), completar, corregir ubicación, liberar, reembolsar a la cartera | Soporte | `/soporte/pedidos/{id}/...` |
 
 ---
 
@@ -309,6 +362,12 @@ Los eventos que emiten las apps responden con un *ack*: `{ ok: true }` o `{ ok: 
 | `ticket:actualizado` | Creador del ticket | `{ ticketId, estado }` |
 | `cuenta:baneada` | El usuario baneado | `{ motivo }` → la app cierra sesión |
 | `cuenta:aprobada` | Tienda o repartidor aprobado | `{}` → la app quita el aviso de cuenta en revisión |
+| `cuenta:rechazada` | Tienda o repartidor cuya solicitud regresó soporte | `{ motivo }` → mostrar qué debe corregir |
+| `solicitud_tienda:aprobada` | El dueño | `{ solicitudId, tiendaId }` → recargar `GET /tiendas/mias` |
+| `solicitud_tienda:rechazada` | El dueño | `{ solicitudId, motivo }` |
+| `solicitud_tienda:nueva` | Soporte (web) | `{ solicitudId, nombre, dueno }` |
+| `tienda:actualizada` | Sala de la tienda | `{ tiendaId, eliminada? }` → admin editó o dio de baja la tienda; recargar `GET /tiendas/mia` |
+| `mapa:repartidor` | Soporte (web) | `{ repartidorId, lat, lng, actualizadoEn }` → mapa en vivo |
 | `notificacion:nueva` | El usuario | `{ id, titulo, cuerpo, datos, creadoEn }` → sumar 1 al globito de la campana |
 | `pedido:mensaje` | Cliente y repartidor del pedido | `MensajePedido` (chat del pedido) |
 

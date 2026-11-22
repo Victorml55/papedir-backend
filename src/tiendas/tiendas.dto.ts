@@ -1,3 +1,4 @@
+import { EsCategoria } from '../config/catalogos';
 import { Type } from 'class-transformer';
 import {
   ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, IsUrl, IsUUID,
@@ -14,12 +15,12 @@ export class BuscarTiendasDto extends PaginaDto {
   @IsOptional() @Type(() => Number) @IsNumber() @Min(-180) @Max(180) lng?: number;
   @IsOptional() @Type(() => Number) @IsNumber() @Min(0.1) @Max(50) radioKm: number = 5;
   @IsOptional() @IsString() @MaxLength(60) q?: string;
-  @IsOptional() @IsIn(CATEGORIAS_TIENDA) categoria?: string;
+  @IsOptional() @EsCategoria() categoria?: string;
 }
 
 export class TiendaUpdateDto {
   @IsOptional() @IsString() @IsNotEmpty() @MaxLength(80) nombre?: string;
-  @IsOptional() @IsIn(CATEGORIAS_TIENDA) categoria?: string;
+  @IsOptional() @EsCategoria() categoria?: string;
   @IsOptional() @IsString() @MaxLength(300) descripcion?: string;
   @IsOptional() @IsString() @MaxLength(500) imagenUrl?: string;
   @IsOptional() @Matches(/^[0-9]{10}$/, { message: 'telefono debe tener 10 dígitos' }) telefono?: string;
@@ -31,14 +32,25 @@ export class TiendaUpdateDto {
 
 export class SucursalDto {
   @IsString() @IsNotEmpty() @MaxLength(80) nombre: string;
-  @IsIn(CATEGORIAS_TIENDA) categoria: string;
+  @EsCategoria() categoria: string;
   @IsOptional() @IsString() @MaxLength(300) descripcion?: string;
   @IsOptional() @Matches(/^[0-9]{10}$/, { message: 'telefono debe tener 10 dígitos' }) telefono?: string;
   @IsString() @IsNotEmpty() @MaxLength(200) direccion: string;
   @ValidateNested() @Type(() => CoordenadasDto) ubicacion: CoordenadasDto;
   @IsOptional() @IsInt() @Min(5) @Max(120) tiempoPreparacionMin?: number;
+  @IsOptional() @IsString() @MaxLength(500) imagenUrl?: string;
   /** Copia categorías, productos y opciones de otra sucursal propia. */
   @IsOptional() @IsUUID() copiarMenuDe?: string;
+}
+
+export class ListaSolicitudesDto {
+  @IsOptional() @IsIn(['pendiente', 'aprobada', 'rechazada', 'cancelada']) estado?: 'pendiente' | 'aprobada' | 'rechazada' | 'cancelada';
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) page = 1;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit = 20;
+}
+
+export class RechazarSolicitudDto {
+  @IsString() @IsNotEmpty() @MaxLength(500) motivo: string;
 }
 
 export class TurnoDto {
