@@ -65,7 +65,12 @@ export class ResolucionesService {
     const movs = await this.ds.getRepository(Movimiento).findBy({ pedidoId: p.id, tipo: In(['compensacion_repartidor', 'cargo_cancelacion']) });
     const compensacion = redondear(movs.filter((m) => m.tipo === 'compensacion_repartidor').reduce((s, m) => s + Number(m.monto), 0));
     const yaHuboCargo = movs.some((m) => m.tipo === 'cargo_cancelacion');
-    const aceptado = await this.ds.getRepository(EventoPedido).existsBy({ pedidoId: p.id, tipo: 'aceptado_tienda' });
+    // La tienda lo aceptó ella misma, o soporte lo pasó a aceptado por ella.
+    const [{ aceptado }] = await this.ds.query(
+      `SELECT EXISTS (SELECT 1 FROM eventos_pedido WHERE pedido_id = $1
+         AND (tipo = 'aceptado_tienda' OR (tipo = 'avanzado_por_soporte' AND detalle LIKE 'creado → aceptado_tienda%'))) AS aceptado`,
+      [p.id],
+    );
     return { p, tienda, participantes, compensacion, yaHuboCargo, aceptado };
   }
 

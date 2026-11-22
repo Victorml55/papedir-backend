@@ -2016,6 +2016,24 @@ describe('PaPedir API', () => {
       await api('post', `/soporte/pedidos/${p.id}/resolucion`, 'admin', grande).expect(200);
     });
 
+    it('aplica varias líneas para la misma persona (todas las sugerencias juntas)', async () => {
+      // Cancelado antes de recogerlo y con la tienda aceptada: viaje en falso + cargo por cancelación al cliente
+      const carrito = { clienteId: id.clientePanel, tiendaId: id.tiendaId, direccionId: id.dirPanel, items: [{ productoId: id.pastor, cantidad: 1, opciones: [id.verde] }] };
+      const p = (await api('post', '/soporte/pedidos', 'soporte', carrito).expect(201)).body;
+      await api('post', `/soporte/pedidos/${p.id}/avanzar`, 'soporte', { motivo: 'Aceptado' }).expect(200);
+      await api('post', `/soporte/pedidos/${p.id}/avanzar`, 'soporte', { motivo: 'Listo' }).expect(200);
+      await api('post', `/soporte/pedidos/${p.id}/asignar`, 'soporte', { repartidorId: id.repPanel, motivo: 'Cerca' }).expect(200);
+      await api('post', `/soporte/pedidos/${p.id}/cancelar`, 'soporte', { motivo: 'No se localizó al cliente' }).expect(200);
+      const r = (await api('get', `/soporte/pedidos/${p.id}/resolucion`, 'soporte').expect(200)).body;
+      const acciones = r.sugerencias.cliente.map((a) => ({ usuarioId: a.usuarioId, monto: a.monto, concepto: a.concepto }));
+      expect(acciones.filter((a) => a.usuarioId === id.clientePanel)).toHaveLength(2);
+      const antes = await saldo('clientePanel');
+      const hecho = (await api('post', `/soporte/pedidos/${p.id}/resolucion`, 'soporte', { culpable: 'cliente', nota: 'prueba', acciones }).expect(200)).body;
+      expect(hecho.resolucion.acciones).toHaveLength(acciones.length);
+      const cargos = acciones.filter((a) => a.usuarioId === id.clientePanel).reduce((s, a) => s + a.monto, 0);
+      expect(await saldo('clientePanel')).toBeCloseTo(antes + cargos, 2);
+    });
+
     it('reintentar reembolso solo si falló', async () => {
       expect((await api('post', `/soporte/pedidos/${id.cancelado}/reembolso/reintentar`, 'soporte', { destino: 'cartera' }).expect(409)).body.error).toBe('SIN_REEMBOLSO_PENDIENTE');
       await ds.query(`UPDATE pedidos SET pago_estado = 'reembolso_fallido', metodo_pago = 'tarjeta' WHERE id = $1`, [id.cancelado]);
