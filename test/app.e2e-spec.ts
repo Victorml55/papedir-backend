@@ -355,10 +355,14 @@ describe('PaPedir API', () => {
     const tomar = (pedido: string) => api('post', `/repartidor/pedidos/${pedido}/tomar`, 'rep1');
     const cerca = [0.004, 0.005, 0.006, 0.007, 0.008].map((d) => mover(TIENDA, d)); // destinos a 450–900 m de la tienda
 
-    it('el pedido manual nace listo, sin código y cobra monto + envío', async () => {
+    it('el pedido manual nace listo, con código para la tienda y cobra monto + envío', async () => {
       const p = await manual(cerca[0], 350);
-      expect(p).toMatchObject({ estado: 'listo_para_recoger', origen: 'manual', subtotal: 350, costoEnvio: 25, total: 375, codigoEntrega: null });
+      expect(p).toMatchObject({ estado: 'listo_para_recoger', origen: 'manual', subtotal: 350, costoEnvio: 25, total: 375 });
+      expect(p.codigoEntrega).toMatch(/^\d{4}$/);
+      // La tienda lo vuelve a ver en el detalle; el repartidor no.
+      expect((await api('get', `/pedidos/${p.id}`, 'tienda').expect(200)).body.codigoEntrega).toBe(p.codigoEntrega);
       id.m1 = p.id;
+      id.m1Codigo = p.codigoEntrega;
     });
 
     it('solo deja encadenar pedidos cercanos a la ruta y nunca más de 4', async () => {
@@ -385,12 +389,17 @@ describe('PaPedir API', () => {
       id.quinto = quinto.id;
     });
 
-    it('un pedido manual se entrega sin código', async () => {
+    it('un pedido manual se entrega con el código que compartió la tienda', async () => {
       const marca = (paso: string, ubicacion: any) => api('post', `/repartidor/pedidos/${id.m1}/${paso}`, 'rep1', { ubicacion }).expect(200);
       await marca('llegada-tienda', TIENDA);
+      expect((await api('get', `/pedidos/${id.m1}`, 'rep1').expect(200)).body.codigoEntrega).toBeNull();
       await marca('salida-tienda', TIENDA);
       await marca('llegada-cliente', cerca[0]);
-      await marca('entregado', cerca[0]);
+      const entregar = (codigoEntrega?: string) =>
+        api('post', `/repartidor/pedidos/${id.m1}/entregado`, 'rep1', { ubicacion: cerca[0], codigoEntrega });
+      const otro = id.m1Codigo === '0000' ? '1111' : '0000';
+      expect((await entregar(otro).expect(409)).body.error).toBe('CODIGO_INCORRECTO');
+      await entregar(id.m1Codigo).expect(200);
       const viaje = (await api('get', '/repartidor/viaje-actual', 'rep1').expect(200)).body;
       expect(viaje.paradas.filter((p) => p.completada)).toHaveLength(2);
       expect(viaje.efectivoACobrar).toBe(375); // quedan 3 pedidos de $100 + $25
@@ -979,6 +988,18 @@ describe('PaPedir API', () => {
       expect(propio.tiendaId).toBe(id.tiendaId);
       expect((await cotizar({ cupon: 'TACO10' }).expect(200)).body.descuento).toBe(17);
       expect((await api('get', '/tiendas/mia/cupones', 'tienda')).body.map((c) => c.codigo)).toEqual(['TACO10']);
+
+      // El cliente ve los cupones que puede usar en la tienda: los de la tienda y los de PaPedir vigentes.
+      await api('post', '/admin/cupones', 'admin', { codigo: 'VENCIDO', tipo: 'monto', valor: 5, fin: '2020-01-01T00:00:00Z' }).expect(201);
+      const apagado = (await api('post', '/admin/cupones', 'admin', { codigo: 'APAGADO', tipo: 'monto', valor: 5 }).expect(201)).body;
+      await api('patch', `/admin/cupones/${apagado.id}`, 'admin', { activo: false }).expect(200);
+      const visibles = (await api('get', `/tiendas/${id.tiendaId}/cupones`, 'cliente').expect(200)).body;
+      expect(visibles.map((c) => c.codigo).sort()).toEqual(['BIENVENIDA', 'TACO10']);
+      expect(visibles.find((c) => c.codigo === 'TACO10')).toEqual({
+        codigo: 'TACO10', descripcion: null, tipo: 'porcentaje', valor: 10, maximoDescuento: null, minimoCompra: 0, fin: null, soloPrimerPedido: false, deLaTienda: true,
+      });
+      expect(visibles.find((c) => c.codigo === 'BIENVENIDA')).toMatchObject({ deLaTienda: false, minimoCompra: 100, descripcion: '$30 de regalo' });
+      await api('get', '/tiendas/00000000-0000-4000-8000-000000000000/cupones', 'cliente').expect(404);
 
       const p = await crear({ cupon: 'BIENVENIDA' });
       expect(p).toMatchObject({ descuento: 30, total: 186, montoAPagarTienda: 170 });

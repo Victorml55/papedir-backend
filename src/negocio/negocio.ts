@@ -7,7 +7,7 @@ import { conflicto, invalido, noEncontrado } from '../common/errores';
 import { redondear, UuidPipe } from '../common/util';
 import { REGLAS } from '../config/reglas';
 import { textoMotivo } from '../config/catalogos';
-import { vistaCupon } from '../cupones/cupones.service';
+import { CuponesService, vistaCupon } from '../cupones/cupones.service';
 import { Cupon, Liquidacion, Movimiento, Tienda, Usuario, Zona } from '../database/entities';
 import { FinanzasService } from '../finanzas/finanzas.service';
 import { ConfiguracionService } from '../nucleo/configuracion.service';
@@ -246,6 +246,7 @@ export class NegocioController {
     private readonly svc: NegocioService,
     private readonly finanzas: FinanzasService,
     private readonly tiendasSvc: TiendasService,
+    private readonly cuponesSvc: CuponesService,
   ) {}
 
   // Zonas
@@ -284,6 +285,15 @@ export class NegocioController {
   @Roles('tienda') @Patch('tiendas/mia/cupones/:id')
   async actualizarMiCupon(@Actor() u: Usuario, @Param('id', UuidPipe) id: string, @Body() dto: CuponUpdateDto, @TiendaSel() t?: string) {
     return this.svc.actualizarCupon(id, dto, (await this.tiendasSvc.deUsuario(u.id, t)).id);
+  }
+  /**
+   * Cupones vigentes que el cliente puede usar en una tienda (de la tienda y de PaPedir).
+   * Va después de las rutas tiendas/mia/cupones: si se declara antes, Express toma "mia" como :id.
+   */
+  @Get('tiendas/:id/cupones')
+  async cuponesDeTienda(@Param('id', UuidPipe) id: string) {
+    await this.tiendasSvc.detalle(id);
+    return this.cuponesSvc.disponibles(id);
   }
 
   // Saldos y liquidaciones
