@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, In, Repository } from 'typeorm';
+import { EntityManager, In, IsNull, Repository } from 'typeorm';
 import { conflicto } from '../common/errores';
 import { redondear } from '../common/util';
 import { Cupon, Pedido, Tienda } from '../database/entities';
@@ -60,5 +60,40 @@ export class CuponesService {
     // Nunca más que lo que cubre: productos (o envío, si es envío gratis).
     descuento = redondear(Math.min(descuento, c.tipo === 'envio_gratis' ? costoEnvio : subtotal));
     return { cupon: c, descuento, absorbe: (c.tiendaId ? 'tienda' : 'plataforma') as 'tienda' | 'plataforma' };
+  }
+
+  /**
+   * Cupones que un cliente puede ver en una tienda (GET /tiendas/{id}/cupones):
+   * los activos y vigentes de esa tienda y los de la plataforma, sin los agotados.
+   * No revela usos ni datos internos; la validación final sigue en `aplicar`.
+   */
+  async disponibles(tiendaId: string) {
+    const ahora = new Date();
+    const lista = await this.cupones.find({
+      where: [
+        { tiendaId, activo: true },
+        { tiendaId: IsNull(), activo: true },
+      ],
+      order: { creadoEn: 'DESC' },
+    });
+    const pedidos = this.cupones.manager.getRepository(Pedido);
+    const vigentes: Cupon[] = [];
+    for (const c of lista) {
+      if (c.inicio && c.inicio > ahora) continue;
+      if (c.fin && c.fin < ahora) continue;
+      if (c.usosMaximos != null) {
+        const usados = await pedidos
+          .createQueryBuilder('p')
+          .where({ cuponId: c.id })
+          .andWhere('p.estado NOT IN (:...no)', { no: NO_CUENTAN })
+          .getCount();
+        if (usados >= c.usosMaximos) continue;
+      }
+      vigentes.push(c);
+    }
+    return vigentes.map((c) => ({
+      codigo: c.codigo, descripcion: c.descripcion, tipo: c.tipo, valor: c.valor, maximoDescuento: c.maximoDescuento,
+      minimoCompra: c.minimoCompra, fin: c.fin, soloPrimerPedido: c.soloPrimerPedido, deLaTienda: c.tiendaId != null,
+    }));
   }
 }

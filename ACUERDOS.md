@@ -126,7 +126,7 @@ El mock acepta cualquier token y devuelve los ejemplos del contrato (montos y co
 
 El mock **no guarda estado ni tiene Socket.IO**: sirve para construir pantallas. Los flujos entre apps y el tiempo real se prueban con el backend real desde la semana 5.
 
-**Versión vigente del contrato: 1.11.1** (`info.version` de `docs/openapi.yaml`). Las apps deben trabajar con esa misma copia en `papedir-frontend/docs/openapi.yaml`; si su rama tiene una versión anterior, la actualizan desde `main` antes de programar algo nuevo.
+**Versión vigente del contrato: 1.12.0** (`info.version` de `docs/openapi.yaml`). Las apps deben trabajar con esa misma copia en `papedir-frontend/docs/openapi.yaml`; si su rama tiene una versión anterior, la actualizan desde `main` antes de programar algo nuevo.
 
 ### Cómo se cambia el contrato
 
@@ -304,6 +304,10 @@ Aplica a direcciones del cliente, la tienda (registro, edición, solicitud de su
 **Apps:** la cartera puede mostrar los tipos nuevos `compensacion_repartidor` y `resolucion` con su `descripcion`; no hay que cambiar nada más. El repartidor recibe la notificación "Pedido cancelado: no pierdes".
 
 **Vehículo del repartidor (1.11.1):** lo registra él mismo al darse de alta (en revisión, o la primera vez si un admin lo creó ya aprobado). En bicicleta no lleva placa. Ya aprobado y con vehículo, `PUT /repartidor/vehiculo` responde 409 `VEHICULO_BLOQUEADO` y la app lo muestra de solo lectura con "abre un ticket con soporte"; soporte lo cambia desde el panel. Sin vehículo no puede conectarse (409 `SIN_VEHICULO`): la app debe llevarlo a registrarlo.
+
+**Cupones visibles y código en pedidos manuales (1.12.0):**
+- `GET /tiendas/{id}/cupones` devuelve los cupones que el cliente puede usar en esa tienda: los activos de la tienda y los de PaPedir (`deLaTienda = false`), dentro de su vigencia y sin agotar. Es solo para mostrarlos (tarjetas en el menú, chips en el checkout); `POST /pedidos/cotizar` sigue validando todo (compra mínima, usos por cliente, primer pedido).
+- Los pedidos manuales ahora llevan `codigoEntrega`. Lo ve la tienda que lo capturó (en la respuesta de `POST /pedidos/manual` y en el detalle) para compartirlo por WhatsApp o llamada con quien recibe; el repartidor lo pide al entregar igual que en los pedidos de la app. Los pedidos manuales creados antes de este cambio no tienen código y se entregan sin él.
 
 ### Estados del pedido
 

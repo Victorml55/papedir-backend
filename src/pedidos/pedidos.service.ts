@@ -443,6 +443,9 @@ export class PedidosService {
           estado: 'listo_para_recoger',
           origen: 'manual',
           tiendaId: tienda.id,
+          // La tienda se lo comparte a quien recibe (WhatsApp o llamada) y el
+          // repartidor lo pide al entregar, igual que en los pedidos de la app.
+          codigoEntrega: String(randomInt(0, 10000)).padStart(4, '0'),
           destinoNombre: dto.destino.nombre,
           destinoTelefono: dto.destino.telefono,
           destinoDireccion: dto.destino.direccion,
@@ -603,8 +606,12 @@ export class PedidosService {
                 cargo: p.metodoPago === 'efectivo' && ESTADOS_CON_CARGO.includes(p.estado) ? cargoCancelacion : 0,
               }
             : null,
-        // El código de entrega solo lo ve el cliente dueño del pedido.
-        codigoEntrega: visor.id === p.clienteId ? p.codigoEntrega : null,
+        // El código de entrega lo ve el cliente dueño del pedido y, en los
+        // pedidos manuales (sin cliente en la app), la tienda que lo capturó.
+        codigoEntrega:
+          (p.clienteId != null && visor.id === p.clienteId) || (p.origen === 'manual' && visor.rol === 'tienda')
+            ? p.codigoEntrega
+            : null,
         calificacion: c ? { tienda: c.tienda, repartidor: c.repartidor, comentario: c.comentario, creadoEn: c.creadoEn } : null,
         notas: p.notas,
         repartidor: r

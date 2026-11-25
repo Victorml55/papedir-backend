@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: PaPedir API
-  version: 1.11.1
+  version: 1.12.0
   description: |
     Contrato de la API de PaPedir, plataforma de reparto a domicilio en Celaya, Gto.
 
@@ -651,6 +651,37 @@ paths:
                         type: object
                         additionalProperties: { type: integer }
                         example: { '5': 12, '4': 3, '3': 1, '2': 0, '1': 0 }
+
+  /tiendas/{id}/cupones:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: cuponesDeTienda
+      tags: [Tiendas]
+      summary: Cupones vigentes que el cliente puede usar en esta tienda
+      description: |
+        Activos, dentro de su vigencia y sin agotar: los de la tienda y los de PaPedir (`deLaTienda = false`).
+        Es solo para mostrarlos; al cotizar se valida todo (compra mínima, usos por cliente, primer pedido).
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    codigo: { type: string, example: BIENVENIDA }
+                    descripcion: { type: string, nullable: true }
+                    tipo: { type: string, enum: [porcentaje, monto, envio_gratis] }
+                    valor: { type: number, example: 10 }
+                    maximoDescuento: { type: number, nullable: true }
+                    minimoCompra: { type: number, example: 100 }
+                    fin: { type: string, format: date-time, nullable: true }
+                    soloPrimerPedido: { type: boolean }
+                    deLaTienda: { type: boolean }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /tiendas/{id}/menu:
     parameters:
@@ -4439,7 +4470,7 @@ components:
         codigoEntrega:
           type: string
           pattern: '^[0-9]{4}$'
-          description: Obligatorio en pedidos de la app; 409 CODIGO_INCORRECTO si no coincide. No aplica en manuales.
+          description: Obligatorio si el pedido tiene código (los de la app y los manuales desde 1.12.0); 409 CODIGO_INCORRECTO si no coincide. Los manuales anteriores no tienen código.
           example: '4821'
         evidenciaUrl:
           type: string
@@ -5208,7 +5239,7 @@ components:
         codigoEntrega:
           type: string
           nullable: true
-          description: 4 dígitos. Solo viene en la respuesta para el cliente dueño del pedido; null en manuales
+          description: 4 dígitos. Viene para el cliente dueño del pedido y, en pedidos manuales, para la tienda que lo capturó (lo comparte por WhatsApp o llamada con quien recibe)
           example: '4821'
         calificacion:
           allOf:
