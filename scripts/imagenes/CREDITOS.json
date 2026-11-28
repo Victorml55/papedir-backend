@@ -1,0 +1,398 @@
+{
+  "taco": {
+    "titulo": "Haciendo Tacos al Pastor",
+    "autor": "i2ooth",
+    "licencia": "pdm 1.0",
+    "fuente": "https://www.flickr.com/photos/80131819@N00/55645001197"
+  },
+  "quesadilla": {
+    "titulo": "Closeup chicken Quesadilla grill",
+    "autor": null,
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.rawpixel.com/image/6036635/photo-image-public-domain-food-free"
+  },
+  "burrito": {
+    "titulo": "Arnstein eating his favorite delivery burrito",
+    "autor": "MUSTAD MARINE",
+    "licencia": "pdm 1.0",
+    "fuente": "https://www.flickr.com/photos/136938983@N07/54717000053"
+  },
+  "hamburguesa": {
+    "titulo": "Alis Hamburger Dhimmi Dreikäsehoch Petjezulma (86)",
+    "autor": "Alis deutsche Dhimmi Dreikäsehochs Petjezulma un",
+    "licencia": "pdm 1.0",
+    "fuente": "https://www.flickr.com/photos/196695255@N02/52422108061"
+  },
+  "hotdog": {
+    "titulo": "Hot Dogs Leo",
+    "autor": "Trader Kimo",
+    "licencia": "pdm 1.0",
+    "fuente": "https://www.flickr.com/photos/152159094@N08/37246625365"
+  },
+  "pizza": {
+    "titulo": "Pizza Cheese",
+    "autor": "Peter Belch",
+    "licencia": "cc0 1.0",
+    "fuente": "https://stocksnap.io/photo/pizza-cheese-L1S7QIJIAT"
+  },
+  "pollo": {
+    "titulo": "Fried chicken sandwich",
+    "autor": "sarahstierch",
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.flickr.com/photos/7633518@N08/54883112513"
+  },
+  "sushi": {
+    "titulo": "Rolling vegetarian “sushi” for supper.",
+    "autor": "Kim Siever",
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.flickr.com/photos/57873306@N00/51827537684"
+  },
+  "ramen": {
+    "titulo": "Am I the only one who likes eating ramen with chopsticks?",
+    "autor": "Kim Siever",
+    "licencia": "pdm 1.0",
+    "fuente": "https://www.flickr.com/photos/57873306@N00/32725587493"
+  },
+  "ensalada": {
+    "titulo": "Salad bowl (saladier) (one six)",
+    "autor": "themet",
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.rawpixel.com/image/8118284/salad-bowl-saladier-one-six-part-service"
+  },
+  "sopa": {
+    "titulo": "Pho Soup",
+    "autor": "Lizette Carrasco",
+    "licencia": "cc0 1.0",
+    "fuente": "https://stocksnap.io/photo/pho-soup-PGXW3EOZVU"
+  },
+  "papas": {
+    "titulo": "Close up of some potato chips. The chips have ridges.",
+    "autor": "Josh Pollock",
+    "licencia": "cc0 1.0",
+    "fuente": "https://wordpress.org/photos/photo/948623fa94/"
+  },
+  "pan": {
+    "titulo": "Freshly baked sourdough loaves at local bakery",
+    "autor": "Nutrition, Food Safety & Health",
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.flickr.com/photos/93936679@N05/51328789171"
+  },
+  "cafe": {
+    "titulo": "Blue coffee cup and saucer - Generative AI Art - LR Enhanced",
+    "autor": "John B Fotografía",
+    "licencia": "pdm 1.0",
+    "fuente": "https://www.flickr.com/photos/23895243@N05/53418747383"
+  },
+  "refresco": {
+    "titulo": "Soda Softdrink",
+    "autor": "Agnieszka Bladzik",
+    "licencia": "cc0 1.0",
+    "fuente": "https://stocksnap.io/photo/soda-softdrink-H57MU5YDCI"
+  },
+  "agua": {
+    "titulo": "Strawberry aguas fresca",
+    "autor": "sarahstierch",
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.flickr.com/photos/7633518@N08/54351511018"
+  },
+  "jugo": {
+    "titulo": "Drink Beverage",
+    "autor": "Julia D'Alkmin",
+    "licencia": "cc0 1.0",
+    "fuente": "https://stocksnap.io/photo/drink-beverage-7SKKID2EPP"
+  },
+  "cerveza": {
+    "titulo": "Still Life Roemer, Beer Glass",
+    "autor": "rijksmuseum",
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.rawpixel.com/image/13744652/image-art-wood-public-domain"
+  },
+  "te": {
+    "titulo": "A Nice Cup of Tea",
+    "autor": "GaoFeiWings",
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.flickr.com/photos/169022792@N02/53432338711"
+  },
+  "pastel": {
+    "titulo": "Navy 247th Birthday at NHB/NMRTC Bremerton 221013-N-HU933-0996",
+    "autor": "NavyMedicine",
+    "licencia": "pdm 1.0",
+    "fuente": "https://www.flickr.com/photos/61270229@N05/52428085265"
+  },
+  "helado": {
+    "titulo": "Safety updated Yasso Ice Cream Truck",
+    "autor": "PatrickRich",
+    "licencia": "pdm 1.0",
+    "fuente": "https://www.flickr.com/photos/91689877@N03/52288874841"
+  },
+  "galleta": {
+    "titulo": "Chocolate Chip Cookie",
+    "autor": "Alabama Extension",
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.flickr.com/photos/184594136@N08/55248310707"
+  },
+  "dona": {
+    "titulo": "Donut.",
+    "autor": "jonathan_brandt",
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.flickr.com/photos/61055902@N04/52369925448"
+  },
+  "chocolate": {
+    "titulo": "HD chocolate bar stock photo",
+    "autor": "zippydahut",
+    "licencia": "pdm 1.0",
+    "fuente": "https://www.flickr.com/photos/196267857@N02/52283966121"
+  },
+  "dulce": {
+    "titulo": "SC 405016 - Pfc. Alfred George, Brooklyn, N.Y., makes friends with little Ukrainian girl by offering her candy in Duren.",
+    "autor": "Signal Corps Archive",
+    "licencia": "pdm 1.0",
+    "fuente": "https://www.flickr.com/photos/186360156@N02/52242985483"
+  },
+  "arroz": {
+    "titulo": "20210902-FNS-UNC-0037",
+    "autor": "USDAgov",
+    "licencia": "pdm 1.0",
+    "fuente": "https://www.flickr.com/photos/41284017@N08/51431444734"
+  },
+  "frijol": {
+    "titulo": "Homemade black bean burgers for supper, including homemade buns.",
+    "autor": "Kim Siever",
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.flickr.com/photos/57873306@N00/51526343854"
+  },
+  "aceite": {
+    "titulo": "Free olive oil bottle garlic",
+    "autor": null,
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.rawpixel.com/image/5927777/photo-image-background-public-domain-black"
+  },
+  "huevo": {
+    "titulo": "Petaluma, Sonoma County, California. Packing",
+    "autor": "libraryofcongress",
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.rawpixel.com/image/12144441/image-person-art-vintage"
+  },
+  "leche": {
+    "titulo": "Pumped breastmilk and baby bottle",
+    "autor": "Alabama Extension",
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.flickr.com/photos/184594136@N08/51330400188"
+  },
+  "queso": {
+    "titulo": "wrap with ham, salad, green and fresh cheese",
+    "autor": "Nemeth/Star Productions",
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.flickr.com/photos/192268789@N06/51336269858"
+  },
+  "fruta": {
+    "titulo": "Sri Lankan Fresh Fruit",
+    "autor": "Dennis S. Hurd",
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.flickr.com/photos/43296902@N00/49167305398"
+  },
+  "verdura": {
+    "titulo": "Vegetable and flower market in the old city of Amsterdam; square Amstelveld",
+    "autor": "Amsterdam street photography, free download photos",
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.flickr.com/photos/104736837@N03/51799092789"
+  },
+  "carne": {
+    "titulo": "Mutton Sliced Isolated Background",
+    "autor": "personalgraphic.official",
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.flickr.com/photos/198895458@N04/53097410414"
+  },
+  "tortilla": {
+    "titulo": "Abstract shot Mexican tortillas falling",
+    "autor": null,
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.rawpixel.com/image/3294751/free-photo-image-guadalajara-mexican-mexico-food"
+  },
+  "azucar": {
+    "titulo": "Cutting the sugar cane in Rio Pedro, Porto Rico - circa 1920",
+    "autor": "Aussie~mobs",
+    "licencia": "pdm 1.0",
+    "fuente": "https://www.flickr.com/photos/70994841@N07/52622586648"
+  },
+  "cereal": {
+    "titulo": "20210902-FNS-UNC-0043",
+    "autor": "USDAgov",
+    "licencia": "pdm 1.0",
+    "fuente": "https://www.flickr.com/photos/41284017@N08/51431673135"
+  },
+  "shampoo": {
+    "titulo": "Bottles shampoo lotions manufactured C.L",
+    "autor": "libraryofcongress",
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.rawpixel.com/image/7005551/photo-image-vintage-design-public-domain"
+  },
+  "pasta_dental": {
+    "titulo": "Cozy still life of bamboo toothbrushes with toothpaste on a bamboo mat.",
+    "autor": "Nora Ferreirós",
+    "licencia": "cc0 1.0",
+    "fuente": "https://wordpress.org/photos/photo/574641d8aa/"
+  },
+  "jabon": {
+    "titulo": "Marseille soaps, Location unknown, Dec",
+    "autor": null,
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.rawpixel.com/image/6113036/marseille-soaps-location-unknown-dec-23-2015"
+  },
+  "papel": {
+    "titulo": "Tariffs and Toilet Paper",
+    "autor": "exit78",
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.flickr.com/photos/28826830@N00/54480370343"
+  },
+  "curitas": {
+    "titulo": "210924-Z-AL508-1173",
+    "autor": "New Jersey National Guard",
+    "licencia": "pdm 1.0",
+    "fuente": "https://www.flickr.com/photos/64672857@N02/51512868636"
+  },
+  "suero": {
+    "titulo": "2nd Regiment, Basic Camp, Drill & Ceremony | CST 2026",
+    "autor": "U.S. Army ROTC",
+    "licencia": "pdm 1.0",
+    "fuente": "https://www.flickr.com/photos/136737541@N05/55377504527"
+  },
+  "medicina": {
+    "titulo": "Pill or Snuff Box 1906–16",
+    "autor": "museado",
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.flickr.com/photos/200781279@N05/53870924500"
+  },
+  "vitamina": {
+    "titulo": "Pills for Corregidor and Bataan veterans",
+    "autor": "exit78",
+    "licencia": "pdm 1.0",
+    "fuente": "https://www.flickr.com/photos/28826830@N00/51391337110"
+  },
+  "cubrebocas": {
+    "titulo": "Face Mask",
+    "autor": "Matt Bango",
+    "licencia": "cc0 1.0",
+    "fuente": "https://stocksnap.io/photo/face-mask-CG0LCKBQKS"
+  },
+  "termometro": {
+    "titulo": "Soil temperature residue previous crops",
+    "autor": "U.S. Department of Agriculture",
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.rawpixel.com/image/10994054/photo-image-public-domain-hill-soil"
+  },
+  "martillo": {
+    "titulo": "Plaque c. 500–200 BCE",
+    "autor": "museado",
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.flickr.com/photos/200781279@N05/53866848060"
+  },
+  "cinta_metrica": {
+    "titulo": "Free tape measure",
+    "autor": null,
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.rawpixel.com/image/5920956/free-tape-measure-public-domain-cc0-photo"
+  },
+  "foco": {
+    "titulo": "LED light bulb",
+    "autor": null,
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.rawpixel.com/image/6021731/led-light-bulb-free-public-domain-cc0-photo"
+  },
+  "cinta_aislar": {
+    "titulo": "Lionel Loueke Trio, 3 april 2016 BIM Amsterdam - Lionel Loueke",
+    "autor": "dirkneven1966",
+    "licencia": "pdm 1.0",
+    "fuente": "https://www.flickr.com/photos/146907430@N03/51312312692"
+  },
+  "extension": {
+    "titulo": "20220125-RD-LSC-0157",
+    "autor": "USDAgov",
+    "licencia": "pdm 1.0",
+    "fuente": "https://www.flickr.com/photos/41284017@N08/51844419320"
+  },
+  "pintura": {
+    "titulo": "Paint Brushes",
+    "autor": "Candace McDaniel",
+    "licencia": "cc0 1.0",
+    "fuente": "https://stocksnap.io/photo/paint-brushes-YQSBGLABSM"
+  },
+  "tornillo": {
+    "titulo": "1 65 Fylde turning the screw",
+    "autor": "ForwardDefensive",
+    "licencia": "pdm 1.0",
+    "fuente": "https://www.flickr.com/photos/78091088@N02/52726982331"
+  },
+  "llave": {
+    "titulo": "ONE INCH WRENCH...",
+    "autor": "Johann Kuester",
+    "licencia": "pdm 1.0",
+    "fuente": "https://www.flickr.com/photos/135057501@N05/52300420650"
+  },
+  "pegamento": {
+    "titulo": "Sanding the glue and filler.",
+    "autor": "Kim Siever",
+    "licencia": "pdm 1.0",
+    "fuente": "https://www.flickr.com/photos/57873306@N00/25175335098"
+  },
+  "bateria": {
+    "titulo": "SC 184758 - Crew manning Bofors gun two minutes before opening fire on Jap installations in New Guinea, using their AA gun as field artillery weapon.",
+    "autor": "Signal Corps Archive",
+    "licencia": "pdm 1.0",
+    "fuente": "https://www.flickr.com/photos/186360156@N02/52280472086"
+  },
+  "gen_comida": {
+    "titulo": "Plate",
+    "autor": "themet",
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.rawpixel.com/image/10234736/plate"
+  },
+  "gen_abarrotes": {
+    "titulo": "20211028-AMS-LSC-0049",
+    "autor": "USDAgov",
+    "licencia": "pdm 1.0",
+    "fuente": "https://www.flickr.com/photos/41284017@N08/51648757970"
+  },
+  "gen_farmacia": {
+    "titulo": "Porte de la pharmacie à l'aigle noir / Dveře do lékárna U Černého orla",
+    "autor": "Zéphyrios",
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.flickr.com/photos/147161025@N05/53989763482"
+  },
+  "gen_materiales": {
+    "titulo": "1917 Sanborn Map Number 18",
+    "autor": "Ashtabula Archive",
+    "licencia": "pdm 1.0",
+    "fuente": "https://www.flickr.com/photos/115892967@N03/55319215337"
+  },
+  "gen_otros": {
+    "titulo": "Groceries in Shopping Bag",
+    "autor": "Alabama Extension",
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.flickr.com/photos/184594136@N08/52326127837"
+  },
+  "tienda_abarrotes": {
+    "titulo": "Interior D.G.S. Store, 9th &",
+    "autor": "libraryofcongress",
+    "licencia": "cc0 1.0",
+    "fuente": "https://www.rawpixel.com/image/7003185/interior-dgs-store-9th-sts-nw-wash-dc"
+  },
+  "tienda_farmacia": {
+    "titulo": "Spotlight Newspaper Advertisement - Stage 4 Lockdown",
+    "autor": "AS 1979",
+    "licencia": "pdm 1.0",
+    "fuente": "https://www.flickr.com/photos/86792135@N04/52051771866"
+  },
+  "tienda_materiales": {
+    "titulo": "Hardware store Porto Portugal",
+    "autor": "amanderson2",
+    "licencia": "pdm 1.0",
+    "fuente": "https://www.flickr.com/photos/49399018@N00/52787278789"
+  },
+  "tienda_otros": {
+    "titulo": "Priddy's Maple Shop",
+    "autor": "exit78",
+    "licencia": "pdm 1.0",
+    "fuente": "https://www.flickr.com/photos/28826830@N00/52003094394"
+  }
+}
