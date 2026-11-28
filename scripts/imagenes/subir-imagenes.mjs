@@ -2,8 +2,12 @@
 // Uso:  node subir-imagenes.mjs                (pide correo y contraseña de admin)
 //       API_URL=http://localhost:3000/api/v1 node subir-imagenes.mjs
 //       node subir-imagenes.mjs --todos        (también reemplaza los que ya tienen imagen)
+//       node subir-imagenes.mjs --cambiar-ilustraciones
+//                                              (reemplaza solo las ilustraciones que subió este script
+//                                               por las fotos descargadas; no toca fotos puestas a mano)
 import { readFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -11,6 +15,32 @@ import path from 'node:path';
 const API = (process.env.API_URL || 'https://papedir-api.onrender.com/api/v1').replace(/\/$/, '');
 const DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'imagenes');
 const TODOS = process.argv.includes('--todos');
+const CAMBIAR = process.argv.includes('--cambiar-ilustraciones');
+// Huella (sha1) de cada ilustración original: así se reconoce una imagen subida por este script.
+const ILUSTRACIONES = JSON.parse(await readFile(path.join(path.dirname(DIR), 'ilustraciones.json'), 'utf8'));
+/** ¿Ya hay una foto descargada para esta clave (y no solo la ilustración)? */
+function tieneFoto(clave) {
+  if (['png', 'webp'].some((e) => existsSync(path.join(DIR, `${clave}.${e}`)))) return true;
+  const jpg = path.join(DIR, `${clave}.jpg`);
+  return existsSync(jpg) && !(createHash('sha1').update(readFileSync(jpg)).digest('hex') in ILUSTRACIONES);
+}
+
+/** ¿La imagen publicada en esa URL es una de nuestras ilustraciones? */
+async function esIlustracion(url) {
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return false;
+    return createHash('sha1').update(Buffer.from(await r.arrayBuffer())).digest('hex') in ILUSTRACIONES;
+  } catch { return false; }
+}
+
+/** Decide si se reemplaza la imagen actual. */
+async function reemplazar(actual, clave) {
+  if (!actual) return true;                 // no tiene imagen
+  if (TODOS) return true;
+  if (CAMBIAR) return tieneFoto(clave) && (await esIlustracion(actual)); // solo si hay foto para cambiarla
+  return false;
+}
 
 // Palabra en el nombre del producto → imagen. Se revisan en orden; gana la primera que aparezca.
 const REGLAS = [
@@ -91,17 +121,18 @@ async function main() {
   let productos = 0, saltados = 0, tiendasConImagen = 0;
   for (const t of tiendas) {
     const cat = t.categoria;
-    if (TODOS || !t.imagenUrl) {
+    const claveTienda = `tienda_${GENERICO[cat] ? cat : 'otros'}`;
+    if (await reemplazar(t.imagenUrl, claveTienda)) {
       try {
-        await api('PATCH', `/admin/tiendas/${t.id}`, { imagenUrl: await url(`tienda_${GENERICO[cat] ? cat : 'otros'}`, 'tienda') });
+        await api('PATCH', `/admin/tiendas/${t.id}`, { imagenUrl: await url(claveTienda, 'tienda') });
         tiendasConImagen++;
       } catch (e) { console.log(`  ! portada de ${t.nombre}: ${e.message}`); }
     }
     const lista = await api('GET', `/soporte/tiendas/${t.id}/productos`);
     console.log(`\n${t.nombre} (${lista.length} productos)`);
     for (const p of lista) {
-      if (!TODOS && (p.imagenes?.length || p.imagenUrl)) { saltados++; continue; }
       const clave = imagenPara(p.nombre, cat);
+      if (!(await reemplazar(p.imagenes?.[0] || p.imagenUrl, clave))) { saltados++; continue; }
       try {
         await api('PATCH', `/soporte/productos/${p.id}`, { imagenes: [await url(clave, 'producto')] });
         productos++;
@@ -109,6 +140,6 @@ async function main() {
       } catch (e) { console.log(`  ! ${p.nombre}: ${e.message}`); }
     }
   }
-  console.log(`\nListo: ${productos} productos y ${tiendasConImagen} tiendas con imagen nueva; ${saltados} productos ya tenían imagen.`);
+  console.log(`\nListo: ${productos} productos y ${tiendasConImagen} tiendas con imagen nueva; ${saltados} productos se dejaron como estaban.`);
 }
 main().catch((e) => { console.error('\nError:', e.message); process.exit(1); });
