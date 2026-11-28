@@ -6,8 +6,23 @@ no se vean vacíos en las apps y en el panel.
 | Archivo | Para qué |
 | --- | --- |
 | `imagenes/` | 74 imágenes: una por tipo de producto (`taco.jpg`, `refresco.jpg`, `arroz.jpg`, `shampoo.jpg`, `martillo.jpg`…), genéricas por giro (`gen_comida.jpg`…) y portadas de tienda (`tienda_farmacia.jpg`…) |
+| `descargar-fotos.mjs` | Cambia las ilustraciones por fotos reales de dominio público (CC0) desde Openverse |
+| `CREDITOS.json` | Título, autor, licencia y página de origen de cada foto descargada (lo crea el script anterior) |
 | `subir-imagenes.mjs` | Entra como admin y le pone imagen a cada producto y tienda que no tiene |
 | `generar.py` | Vuelve a generar las imágenes (Python 3 + Pillow + fuente Noto Color Emoji) |
+
+## Fotos reales
+
+```bash
+cd scripts/imagenes
+node descargar-fotos.mjs              # busca foto para cada clave que aún no tiene
+node descargar-fotos.mjs taco pizza   # solo esas claves (por ejemplo, si una no te gustó)
+```
+
+Solo descarga fotos con licencia CC0 o de dominio público, que se pueden usar sin pedir permiso
+ni dar crédito; aun así guarda la fuente en `CREDITOS.json`. Reemplaza `imagenes/<clave>.jpg`
+(puede quedar `.png` o `.webp`) y, si no encuentra una foto libre, deja la ilustración.
+Revisa las fotos antes de subirlas: la búsqueda es automática y alguna puede no ser la ideal.
 
 ## Subirlas a una API
 

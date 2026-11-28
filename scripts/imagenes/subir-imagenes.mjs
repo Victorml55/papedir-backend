@@ -3,6 +3,7 @@
 //       API_URL=http://localhost:3000/api/v1 node subir-imagenes.mjs
 //       node subir-imagenes.mjs --todos        (también reemplaza los que ya tienen imagen)
 import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -55,9 +56,13 @@ async function api(metodo, ruta, cuerpo) {
   return datos;
 }
 
+const MIME = { jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp' };
 async function subir(clave, tipo) {
+  // Usa la foto descargada (jpg, png o webp) o, si no hay, la ilustración.
+  const ext = Object.keys(MIME).find((e) => existsSync(path.join(DIR, `${clave}.${e}`)));
+  if (!ext) throw new Error(`no existe imagenes/${clave}.*`);
   const f = new FormData();
-  f.append('archivo', new Blob([await readFile(path.join(DIR, `${clave}.jpg`))], { type: 'image/jpeg' }), `${clave}.jpg`);
+  f.append('archivo', new Blob([await readFile(path.join(DIR, `${clave}.${ext}`))], { type: MIME[ext] }), `${clave}.${ext}`);
   f.append('tipo', tipo);
   return (await api('POST', '/uploads', f)).url;
 }
