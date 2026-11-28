@@ -234,3 +234,6 @@ Con un remitente de Gmail algunos correos pueden caer en spam; con un dominio pr
 
 La llave secreta nunca va en las apps ni en el chat del equipo; las apps reciben la publicable con `GET /pagos/config`.
 
+## Imágenes de productos
+
+En `scripts/imagenes/` hay ilustraciones para productos y tiendas y un script que se las pone a todo lo que no tenga imagen: `cd scripts/imagenes && node subir-imagenes.mjs`. Ver su README.
